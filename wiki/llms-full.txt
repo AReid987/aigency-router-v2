@@ -1,0 +1,170 @@
+# llms-full.txt — Aigency Router v2
+
+## Project Overview
+
+Aigency Router v2 is a multi-agent AI skill orchestration hub. It curates, versions, and distributes reusable AI agent skills across 18+ coding agent platforms. Built on the BMad (Business Modeler & Developer) framework, it provides a unified skill library with specialized agent personas for product discovery, architecture, development, and quality assurance.
+
+## Repository Structure
+
+```
+aigency-router-v2/
+├── .qwen/skills/              # Canonical BMad skill store (53 skills)
+├── .agents/skills/            # Shared external skills (3 Stripe skills)
+├── skills/                    # Symlinks to .agents/skills/
+├── .claude/skills/            # Claude Code agent skills (symlinked)
+├── .cline/skills/             # Cline agent skills (symlinked)
+├── .factory/skills/           # Factory agent skills (symlinked)
+├── .qoder/skills/             # Qoder agent skills (symlinked)
+├── .agent/skills/             # Generic agent skills (symlinked)
+├── .goose/skills/             # Goose agent skills (minimal)
+├── .crush/skills/             # Crush agent skills (minimal)
+├── .iflow/skills/             # iFlow agent skills (minimal)
+├── .kilocode/skills/          # Kilocode agent skills (minimal)
+├── .kiro/skills/              # Kiro agent skills (minimal)
+├── .openhands/skills/         # OpenHands agent skills (minimal)
+├── .pi/skills/                # Pi agent skills (minimal)
+├── .roo/skills/               # Roo agent skills (minimal)
+├── .rovodev/skills/           # RovoDev agent skills (minimal)
+├── .trae/skills/              # Trae agent skills (minimal)
+├── .vibe/skills/              # Vibe agent skills (minimal)
+├── .zencoder/skills/          # Zencoder agent skills (minimal)
+├── _bmad/                     # BMad framework configuration
+│   ├── config.toml            # Resolved configuration (installer-managed, read-only)
+│   ├── core/                  # Framework defaults (config.yaml, module-help.csv)
+│   ├── bmm/                   # Business Modeler & Manager module
+│   │   ├── config.yaml        # Planning artifacts, implementation artifacts, project knowledge paths
+│   │   └── module-help.csv    # BMM module documentation
+│   ├── tea/                   # Test Engineering & Assurance module
+│   │   ├── config.yaml        # Test artifacts, Playwright, risk threshold P1
+│   │   ├── module-help.csv    # TEA module documentation
+│   │   └── workflows/         # Test architecture workflows
+│   ├── custom/                # Custom overrides
+│   │   ├── config.toml        # Team overrides (committed)
+│   │   └── config.user.toml   # Personal overrides (gitignored)
+│   ├── scripts/               # Configuration resolution scripts
+│   │   ├── resolve_config.py  # Main config resolver
+│   │   └── resolve_customization.py  # Customization resolver
+│   └── _config/               # Generated configuration artifacts
+│       ├── manifest.yaml      # Full manifest
+│       ├── skill-manifest.csv # Skill directory mapping
+│       ├── files-manifest.csv # File inventory
+│       └── bmad-help.csv      # BMad help reference
+├── docs/                      # Project documentation
+│   ├── agile-context/         # PRD, architecture, UX docs (empty templates)
+│   └── maestro/               # Orchestration plans and state
+├── _bmad-output/              # Generated artifacts (gitignored)
+│   ├── implementation-artifacts/
+│   ├── planning-artifacts/
+│   └── test-artifacts/
+├── .gsd -> ~/.gsd/projects/57b4f38c4bd3  # GSD project management symlink
+├── .gsd-id                    # GSD project identifier
+├── AGENTS.md                  # AI agent context and ICM conventions
+├── CLAUDE.md                  # Claude Code specific context
+├── skills-lock.json           # External skill SHA-256 hashes
+├── .github/copilot-instructions.md  # GitHub Copilot context
+└── .gitignore                 # Git ignore rules
+```
+
+## BMad Framework
+
+### Modules
+
+**Core**: Framework defaults, project name "aigency-router-v2", output folder `_bmad-output/`, language "English".
+
+**BMM (Business Modeler & Manager)**:
+- planning_artifacts: `{project-root}/_bmad-output/planning-artifacts`
+- implementation_artifacts: `{project-root}/_bmad-output/implementation-artifacts`
+- project_knowledge: `{project-root}/docs`
+
+**TEA (Test Engineering & Assurance)**:
+- test_artifacts: `{project-root}/_bmad-output/test-artifacts`
+- tea_use_playwright_utils: true
+- tea_browser_automation: auto
+- tea_capability_probe: true
+- test_stack_type: auto
+- ci_platform: auto
+- test_framework: auto
+- risk_threshold: p1
+
+### Agent Personas
+
+All personas belong to the "software-development" team.
+
+| ID | Name | Title | Module | Icon |
+|----|------|-------|--------|------|
+| bmad-agent-analyst | Mary | Business Analyst | BMM | 📊 |
+| bmad-agent-tech-writer | Paige | Technical Writer | BMM | 📚 |
+| bmad-agent-pm | John | Product Manager | BMM | 📋 |
+| bmad-agent-ux-designer | Sally | UX Designer | BMM | 🎨 |
+| bmad-agent-architect | Winston | System Architect | BMM | 🏗️ |
+| bmad-agent-dev | Amelia | Senior Software Engineer | BMM | 💻 |
+| bmad-tea | Murat | Master Test Architect and Quality Advisor | TEA | 🧪 |
+
+### Skills
+
+53 BMad skills covering:
+- Product & Discovery: create-prd, product-brief, market-research, domain-research, prfaq
+- Design & UX: create-ux-design, agent-ux-designer
+- Architecture: create-architecture, create-epics-and-stories, check-implementation-readiness
+- Development: dev-story, create-story, quick-dev, customize
+- Testing & Quality: tea, testarch-atdd, testarch-trace, testarch-test-design, testarch-automate
+- Project Management: sprint-planning, sprint-status, retrospective, correct-course
+- Review & Elicitation: code-review, advanced-elicitation, checkpoint-preview, editorial-review-structure, editorial-review-prose
+- Documentation: create-prd, document-project, index-docs, shard-doc
+- External: stripe-best-practices, stripe-projects, upgrade-stripe
+
+## Skill Format
+
+Each skill is a directory containing `SKILL.md` with:
+- YAML frontmatter: `name`, `description`, `triggers` (list)
+- Markdown body: instructions, examples, workflows
+- Optional: `scripts/`, `resources/`, `prompts/`, `steps-v/`, `steps-c/`, `steps-e/`
+
+## Distribution Model
+
+Canonical stores → symlink → agent directories.
+- `.qwen/skills/` and `.agents/skills/` are canonical
+- Agent directories contain symlinks like `../../.qwen/skills/{skill}`
+- `skills/` in root contains symlinks to `.agents/skills/`
+- Managed by `python _bmad/scripts/resolve_config.py`
+
+## Configuration Resolution
+
+Layered merge order:
+1. `_bmad/core/config.yaml` — framework defaults
+2. `_bmad/bmm/config.yaml` — BMM module config
+3. `_bmad/tea/config.yaml` — TEA module config
+4. `_bmad/custom/config.toml` — team overrides (committed)
+5. `_bmad/custom/config.user.toml` — personal overrides (gitignored)
+6. Output: `_bmad/config.toml` (installer-managed, read-only)
+
+## Skill Integrity
+
+External skills tracked in `skills-lock.json`:
+- `stripe-best-practices`: source docs.stripe.com, hash f0aac866...
+- `stripe-projects`: source docs.stripe.com, hash 74b5f9e1...
+- `upgrade-stripe`: source docs.stripe.com, hash df1c52c1...
+
+## ICM (Intelligent Context Memory)
+
+Mandatory persistent memory system. Commands:
+- `icm recall "query"` — search memories
+- `icm store -t topic -c "content" -i importance -k "keywords"` — store memory
+- `icm health` — topic hygiene audit
+- `icm topics` — list topics
+
+Mandatory store triggers:
+1. Error resolved → `errors-resolved`
+2. Architecture/design decision → `decisions-aigency`
+3. User preference discovered → `preferences`
+4. Significant task completed → `context-aigency`
+5. ~20 tool calls without store → progress summary
+
+## Conventions for AI Agents
+
+- Read skill before modifying it
+- Never edit `_bmad/config.toml` directly
+- Use `_bmad/custom/config.user.toml` for personal overrides
+- Run `resolve_config.py` after manifest changes
+- Store ICM memories before responding at mandatory triggers
+- Cite files with `(file_path:line)` format
