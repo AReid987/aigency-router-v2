@@ -19,6 +19,11 @@ node_modules/
 .next/
 dist/
 build/
+# ── iii engine data ──
+data/
+*.db
+
+# ── Python ──
 __pycache__/
 *.pyc
 .venv/

@@ -1,0 +1,23 @@
+{
+  "name": "aigency-router-v2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aigency OS — autonomous agent swarm orchestration on iii primitives",
+  "scripts": {
+    "dev:engine": "iii --config iii.config.yaml",
+    "dev:all": "concurrently \"pnpm dev:engine\" \"pnpm --filter './workers/*' dev\"",
+    "test": "pnpm -r run test",
+    "build": "pnpm -r run build"
+  },
+  "devDependencies": {
+    "iii-sdk": "^0.17.0",
+    "@iii-dev/observability": "^0.17.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "concurrently": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@10.33.0"
+}
