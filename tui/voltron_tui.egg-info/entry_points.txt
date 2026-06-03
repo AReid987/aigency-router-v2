@@ -1,0 +1,2 @@
+[console_scripts]
+voltron = tui.src.cli:app

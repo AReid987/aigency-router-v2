@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: voltron-tui
+Version: 0.1.0
+Summary: Voltron TUI and CLI for SugarVault management
+Requires-Python: >=3.11
+Requires-Dist: textual>=0.80
+Requires-Dist: typer>=0.12
+Requires-Dist: cryptography>=42.0
+Requires-Dist: rich>=13.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voltron-tui"
+version = "0.1.0"
+description = "Voltron TUI and CLI for SugarVault management"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.80",
+    "typer>=0.12",
+    "cryptography>=42.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+voltron = "tui.src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

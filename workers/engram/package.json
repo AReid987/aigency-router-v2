@@ -5,14 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "test": "node --test src/index.test.ts"
+    "test": "npx tsx --test src/index.test.ts src/heal-json.test.ts src/pipeline.test.ts"
   },
   "dependencies": {
-    "iii-sdk": "^0.17.0"
+    "iii-sdk": "^0.17.0",
+    "jsonrepair": "^3.14.0"
   },
   "devDependencies": {
-    "tsx": "^4.0.0",
     "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   }
 }
