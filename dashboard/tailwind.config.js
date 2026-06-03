@@ -8,6 +8,7 @@ export default {
         'phosphor-amber': '#FFB000',
         'phosphor-green': '#00FF41',
         'phosphor-red': '#FF003C',
+        'phosphor-blue': '#00BFFF',
         crt: {
           50: '#1a1a1a',
           100: '#222222',
