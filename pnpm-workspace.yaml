@@ -1,2 +1,4 @@
 packages:
   - 'workers/*'
+onlyBuiltDependencies:
+  - better-sqlite3
