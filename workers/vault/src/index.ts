@@ -1,5 +1,6 @@
 import { registerWorker, type ISdk } from 'iii-sdk'
 import { VaultManager } from './vault.ts'
+import { logTelemetry } from '../../shared/telemetry.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 const DB_PATH = process.env.VAULT_DB_PATH ?? 'data/vault.db'
@@ -37,7 +38,21 @@ export function createVaultWorker(url: string = ENGINE_URL, masterPassword?: str
       return { error: 'Vault is locked — unlock first', stored: false }
     }
     try {
+      // Check if key already exists (rotation vs new key)
+      const existing = vaultManager.getKey(input.providerId)
       const result = vaultManager.storeKey(input.providerId, input.apiKey, input.virtualColleagueId ?? null)
+
+      // Fire-and-forget telemetry: emit KEY_ROTATED on key rotation
+      if (existing && result.stored) {
+        const telemetryTrigger = (target: string, fnName: string, payload: unknown) =>
+          iii.trigger({ function_id: fnName, payload: payload as Record<string, unknown> })
+        logTelemetry({ trigger: telemetryTrigger }, {
+          eventClass: 'KEY_ROTATED',
+          sourceWorker: 'vault',
+          payload: { providerId: input.providerId },
+        }).catch(() => {})
+      }
+
       return { ...result, worker: 'vault' }
     } catch (err: any) {
       return { error: err.message, stored: false }

@@ -1,5 +1,6 @@
 import { registerWorker, type ISdk } from 'iii-sdk'
 import { CANONICAL_MAP } from './canonical-maps.ts'
+import { logTelemetry } from '../../shared/telemetry.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 
@@ -44,6 +45,16 @@ export function createTranslatorWorker(url: string = ENGINE_URL): ISdk {
   iii.registerFunction('translator::resolve', async (input: { model: string }) => {
     const result = resolveModel(input.model)
     console.log(`[translator] resolve: "${input.model}" → resolved=${result.resolved}, providers=${result.providers.length}`)
+
+    // Fire-and-forget telemetry: emit PROVIDER_RESOLVED on provider resolution
+    const telemetryTrigger = (target: string, fnName: string, payload: unknown) =>
+      iii.trigger({ function_id: fnName, payload: payload as Record<string, unknown> })
+    logTelemetry({ trigger: telemetryTrigger }, {
+      eventClass: 'PROVIDER_RESOLVED',
+      sourceWorker: 'translator',
+      payload: { model: input.model, resolved: result.resolved, providerCount: result.providers.length },
+    }).catch(() => {})
+
     return result
   })
 

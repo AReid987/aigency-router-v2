@@ -1,4 +1,5 @@
 packages:
   - 'workers/*'
+  - 'dashboard'
 onlyBuiltDependencies:
   - better-sqlite3

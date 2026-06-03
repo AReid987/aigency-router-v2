@@ -1,5 +1,6 @@
 import { registerWorker, type ISdk } from 'iii-sdk'
 import { healJson, type HealJsonDeps, type Message } from './heal-json.js'
+import { logTelemetry } from '../../shared/telemetry.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 
@@ -61,6 +62,17 @@ export function registerEngramFunctions(iii: ISdk): void {
       },
       deps,
     )
+
+    // Fire-and-forget telemetry: emit DRIFT_HEALED on successful JSON repair
+    if (result.success) {
+      const telemetryTrigger = (target: string, fnName: string, payload: unknown) =>
+        iii.trigger({ function_id: fnName, payload: payload as Record<string, unknown> })
+      logTelemetry({ trigger: telemetryTrigger }, {
+        eventClass: 'DRIFT_HEALED',
+        sourceWorker: 'engram',
+        payload: { attempts: result.attempts, model: input.model ?? null },
+      }).catch(() => {})
+    }
 
     return result
   })

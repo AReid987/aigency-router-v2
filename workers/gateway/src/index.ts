@@ -1,6 +1,7 @@
 import { registerWorker, type ISdk, type StreamChannelRef } from 'iii-sdk'
 import { FailoverEngine, type RouteResult } from './failover.ts'
 import { callProvider, type Message, type StreamChunk, type ProviderResponse } from './provider-client.ts'
+import { logTelemetry, type EventClass } from '../../shared/telemetry.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 
@@ -242,6 +243,10 @@ export function createGatewayWorker(url: string = ENGINE_URL): ISdk {
   iii.registerFunction('gateway::route_llm', async (input: RouteLlmInput) => {
     logEvent({ event: 'route_llm_request', model: input.model })
 
+    // Build telemetry trigger that wraps sdk.trigger
+    const telemetryTrigger = (target: string, fnName: string, payload: unknown) =>
+      iii.trigger({ function_id: fnName, payload: payload as Record<string, unknown> })
+
     const result = await routeLlm(input, {
       resolveModel: async (model) => {
         const resp = await iii.trigger({ function_id: 'translator::resolve', payload: { model } })
@@ -257,6 +262,25 @@ export function createGatewayWorker(url: string = ENGINE_URL): ISdk {
       },
       createChannel: async () => iii.createChannel(),
     })
+
+    // Fire-and-forget telemetry — emit routing events to SugarDB
+    if (result.success) {
+      logTelemetry({ trigger: telemetryTrigger }, {
+        eventClass: 'FAST_TRACK_ROUTE',
+        sourceWorker: 'gateway',
+        payload: { model: input.model, provider: (result as RouteResult).provider ?? 'unknown' },
+      }).catch(() => {}) // already handled inside logTelemetry
+    } else if ('failures' in result) {
+      // Check for 429 rate-limit failures
+      const has429 = (result as RouteResult).failures?.some((f: { status: number | null }) => f.status === 429)
+      if (has429) {
+        logTelemetry({ trigger: telemetryTrigger }, {
+          eventClass: 'QUOTA_WARNING',
+          sourceWorker: 'gateway',
+          payload: { model: input.model, failureCount: (result as RouteResult).failures.length },
+        }).catch(() => {})
+      }
+    }
 
     return result
   })

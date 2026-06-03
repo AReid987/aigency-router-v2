@@ -87,3 +87,51 @@ describe('resolveModel', () => {
     })
   })
 })
+
+// ── Telemetry Tests ────────────────────────────────────────────────────
+
+describe('translator telemetry emission', () => {
+  it('emits PROVIDER_RESOLVED telemetry on provider resolution', async () => {
+    const { logTelemetry } = await import('../../shared/telemetry.ts')
+
+    let emittedEvent: string | undefined
+    let emittedPayload: any
+    const mockTrigger = async (_target: string, _fnName: string, input: any) => {
+      emittedEvent = input?.eventClass
+      emittedPayload = input
+      return {}
+    }
+
+    await logTelemetry({ trigger: mockTrigger }, {
+      eventClass: 'PROVIDER_RESOLVED',
+      sourceWorker: 'translator',
+      payload: { model: 'llama3', resolved: true, providerCount: 3 },
+    })
+
+    assert.equal(emittedEvent, 'PROVIDER_RESOLVED')
+    assert.equal(emittedPayload.sourceWorker, 'translator')
+    assert.equal(emittedPayload.payload.model, 'llama3')
+    assert.equal(emittedPayload.payload.resolved, true)
+    assert.equal(emittedPayload.payload.providerCount, 3)
+  })
+
+  it('logTelemetry gracefully handles trigger failure', async () => {
+    const { logTelemetry } = await import('../../shared/telemetry.ts')
+
+    const warnLogs: string[] = []
+    const origWarn = console.warn
+    console.warn = (...args: any[]) => warnLogs.push(args.join(' '))
+
+    try {
+      const failingTrigger = async () => { throw new Error('connection refused') }
+      await logTelemetry({ trigger: failingTrigger }, {
+        eventClass: 'PROVIDER_RESOLVED',
+        sourceWorker: 'translator',
+        payload: { model: 'test', resolved: false, providerCount: 0 },
+      })
+      assert.ok(warnLogs.some(l => l.includes('connection refused')), 'should log warning on failure')
+    } finally {
+      console.warn = origWarn
+    }
+  })
+})

@@ -5,14 +5,19 @@ import { registerEngramFunctions, buildHealJsonDeps } from './index.ts'
 // ── Mock SDK Factory ───────────────────────────────────────────────────
 
 function createMockSdk(overrides?: {
-  trigger?: (fnName: string, input: unknown) => Promise<unknown>
+  trigger?: (...args: unknown[]) => Promise<unknown>
 }) {
   const registered = new Map<string, (input: unknown) => Promise<unknown>>()
-  const triggerFn = overrides?.trigger ?? mock.fn(async () => ({}))
+  const triggerFn = overrides?.trigger ?? (async () => ({}))
+  const triggerCalls: { args: unknown[] }[] = []
 
   return {
     registered,
-    trigger: triggerFn,
+    triggerCalls,
+    trigger: mock.fn(async (...args: unknown[]) => {
+      triggerCalls.push({ args })
+      return triggerFn(...args)
+    }),
     registerFunction: (name: string, fn: (input: unknown) => Promise<unknown>) => {
       registered.set(name, fn)
     },
@@ -72,7 +77,9 @@ describe('engram::heal_json', () => {
     assert.deepEqual(result.data, { name: 'test', value: 42 })
     assert.equal(result.attempts, 0)
     // Gateway trigger should not have been called for valid JSON
-    assert.equal((sdk.trigger as any).mock.callCount(), 0)
+    // (only sugar-db::log_event telemetry calls are made)
+    const gatewayCalls = sdk.triggerCalls.filter(c => c.function_id === 'gateway::route_llm')
+    assert.equal(gatewayCalls.length, 0)
   })
 
   it('returns success for valid JSON with whitespace', async () => {
@@ -99,18 +106,18 @@ describe('engram::heal_json', () => {
     assert.deepEqual(result.data, { name: 'test', value: 42 })
     assert.equal(result.attempts, 0)
     // Gateway should not have been called — local repair succeeded
-    assert.equal((sdk.trigger as any).mock.callCount(), 0)
+    // (only sugar-db::log_event telemetry calls are made)
+    const gatewayCalls = sdk.triggerCalls.filter(c => c.function_id === 'gateway::route_llm')
+    assert.equal(gatewayCalls.length, 0)
   })
 
   it('calls gateway::route_llm when local repair fails and gateway returns valid JSON', async () => {
-    let capturedModel: string | undefined
     let capturedFnName: string | undefined
 
     const sdk = createMockSdk({
-      trigger: async (fnName: string, input: unknown) => {
-        capturedFnName = fnName
-        if (fnName === 'gateway::route_llm') {
-          capturedModel = (input as any)?.model
+      trigger: async (...args: unknown[]) => {
+        if (args[0] === 'gateway' && args[1] === 'route_llm') {
+          capturedFnName = 'gateway::route_llm'
           return { response: '{"repaired":true}' }
         }
         return {}
@@ -133,9 +140,9 @@ describe('engram::heal_json', () => {
     let capturedInput: unknown
 
     const sdk = createMockSdk({
-      trigger: async (fnName: string, input: unknown) => {
-        if (fnName === 'gateway::route_llm') {
-          capturedInput = input
+      trigger: async (...args: unknown[]) => {
+        if (args[0] === 'gateway' && args[1] === 'route_llm') {
+          capturedInput = args[2]
           return { response: '{"model_passed":true}' }
         }
         return {}
@@ -200,8 +207,8 @@ describe('engram::heal_json input validation', () => {
 
   it('handles empty string input', async () => {
     const sdk = createMockSdk({
-      trigger: async (fnName: string) => {
-        if (fnName === 'gateway::route_llm') {
+      trigger: async (...args: unknown[]) => {
+        if (args[0] === 'gateway' && args[1] === 'route_llm') {
           return { response: '{}' }
         }
         return {}
@@ -252,5 +259,80 @@ describe('existing functions still work after heal_json wiring', () => {
     assert.deepEqual(result.results, [])
     assert.equal(result.query, 'test')
     assert.equal(result.worker, 'engram')
+  })
+})
+
+// ── Telemetry Tests ────────────────────────────────────────────────────
+
+describe('engram telemetry emission', () => {
+  it('emits DRIFT_HEALED telemetry on successful JSON repair', async () => {
+    const sdk = createMockSdk()
+    registerEngramFunctions(sdk as any)
+    const healJson = sdk.registered.get('engram::heal_json')!
+
+    // Valid JSON — success with 0 attempts
+    await healJson({ jsonString: '{"name":"test"}' })
+
+    // Check that iii.trigger was called with log_event and DRIFT_HEALED
+    // The telemetryTrigger wrapper translates (target, fnName, payload) into
+    // iii.trigger({ function_id: fnName, payload })
+    const telemetryCall = sdk.triggerCalls.find(
+      c => (c.args[0] as any)?.function_id === 'log_event' &&
+           (c.args[0] as any)?.payload?.eventClass === 'DRIFT_HEALED'
+    )
+    assert.ok(telemetryCall, 'should emit DRIFT_HEALED telemetry')
+    assert.deepEqual((telemetryCall.args[0] as any).payload, {
+      eventClass: 'DRIFT_HEALED',
+      sourceWorker: 'engram',
+      payload: { attempts: 0, model: null },
+    })
+  })
+
+  it('emits DRIFT_HEALED with repair attempts count for malformed JSON', async () => {
+    const sdk = createMockSdk()
+    registerEngramFunctions(sdk as any)
+    const healJson = sdk.registered.get('engram::heal_json')!
+
+    // Malformed JSON that local jsonrepair can fix
+    await healJson({ jsonString: "{'key': 'value'}" })
+
+    const telemetryCall = sdk.triggerCalls.find(
+      c => (c.args[0] as any)?.function_id === 'log_event' &&
+           (c.args[0] as any)?.payload?.eventClass === 'DRIFT_HEALED'
+    )
+    assert.ok(telemetryCall, 'should emit DRIFT_HEALED for repaired JSON')
+  })
+
+  it('does NOT emit DRIFT_HEALED on failed repair', async () => {
+    const sdk = createMockSdk()
+    registerEngramFunctions(sdk as any)
+    const healJson = sdk.registered.get('engram::heal_json')!
+
+    // Invalid input — should fail
+    await healJson({ jsonString: 123 as any })
+
+    const telemetryCall = sdk.triggerCalls.find(
+      c => (c.args[0] as any)?.function_id === 'log_event' &&
+           (c.args[0] as any)?.payload?.eventClass === 'DRIFT_HEALED'
+    )
+    assert.ok(!telemetryCall, 'should NOT emit DRIFT_HEALED on failed repair')
+  })
+
+  it('telemetry failure does not affect heal_json result', async () => {
+    const sdk = createMockSdk({
+      trigger: async (...args: unknown[]) => {
+        if (args[0] === 'sugar-db') {
+          throw new Error('sugar-db unavailable')
+        }
+        return {}
+      },
+    })
+    registerEngramFunctions(sdk as any)
+    const healJson = sdk.registered.get('engram::heal_json')!
+
+    // Should still succeed despite telemetry failure
+    const result = await healJson({ jsonString: '{"ok":true}' })
+    assert.equal(result.success, true)
+    assert.deepEqual(result.data, { ok: true })
   })
 })

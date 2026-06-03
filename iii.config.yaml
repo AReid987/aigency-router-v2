@@ -42,6 +42,8 @@ workers:
       adapter:
         name: kv
 
+  - name: sugar-db
+
   - name: iii-observability
     config:
       enabled: true
