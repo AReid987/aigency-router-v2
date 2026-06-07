@@ -70,6 +70,7 @@ describe('streaming integration via iii Channels', () => {
     assert.equal(result.stream, true)
     assert.equal(result.channelRef.channel_id, 'test-channel-123')
     assert.equal(result.channelRef.direction, 'write')
+    assert.ok(result.reader, 'should include reader in streaming result')
     assert.equal(result.provider, 'groq')
 
     // Wait for async pipeStreamToChannel to complete

@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
 
 [project]
 name = "brain-worker"
@@ -11,7 +11,7 @@ dependencies = [
     "iii-sdk>=0.17.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

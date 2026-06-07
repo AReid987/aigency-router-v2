@@ -1,9 +1,10 @@
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useEffect, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { EffectComposer, Bloom, Scanline, ChromaticAberration } from '@react-three/postprocessing';
 import { BlendFunction } from 'postprocessing';
 import * as THREE from 'three';
+import { useTelemetryStore } from '../store/telemetry';
 
 /* ── Constants ─────────────────────────────────────────────────── */
 const AMBER = '#FFB000';
@@ -13,15 +14,24 @@ const ORBIT_RADIUS = 3;
 const ORBIT_SPACING = (2 * Math.PI) / PROVIDERS.length; // 120° apart
 
 /* ── Center Monolith ───────────────────────────────────────────── */
-function CenterMonolith() {
+function CenterMonolith({ flash }: { flash: boolean }) {
   const meshRef = useRef<THREE.Mesh>(null);
+  const flashIntensity = useRef(0);
 
   useFrame((_state, delta) => {
     if (meshRef.current) {
       meshRef.current.rotation.y += delta * 0.3;
       meshRef.current.rotation.x += delta * 0.15;
     }
+    // Flash effect on DRIFT_HEALED
+    flashIntensity.current *= 0.95;
   });
+
+  useEffect(() => {
+    if (flash) {
+      flashIntensity.current = 2.0;
+    }
+  }, [flash]);
 
   return (
     <mesh ref={meshRef}>
@@ -29,7 +39,7 @@ function CenterMonolith() {
       <meshStandardMaterial
         color={AMBER}
         emissive={AMBER}
-        emissiveIntensity={0.8}
+        emissiveIntensity={0.8 + flashIntensity.current}
         roughness={0.3}
         metalness={0.6}
       />
@@ -116,7 +126,7 @@ function OrbitalRing({ radius, color }: { radius: number; color: string }) {
 }
 
 /* ── Scene ─────────────────────────────────────────────────────── */
-function Scene({ activeRoute }: { activeRoute: boolean }) {
+function Scene({ activeRoute, flash }: { activeRoute: boolean; flash: boolean }) {
   const groupRef = useRef<THREE.Group>(null);
 
   // Slow scene rotation for ambient motion
@@ -150,7 +160,7 @@ function Scene({ activeRoute }: { activeRoute: boolean }) {
       {/* Scene group with slow rotation */}
       <group ref={groupRef}>
         {/* Center Monolith */}
-        <CenterMonolith />
+        <CenterMonolith flash={flash} />
 
         {/* Orbital Ring */}
         <OrbitalRing radius={ORBIT_RADIUS} color={GREEN} />
@@ -192,7 +202,31 @@ function Scene({ activeRoute }: { activeRoute: boolean }) {
 }
 
 /* ── Exported RadarCanvas ──────────────────────────────────────── */
-export default function RadarCanvas({ activeRoute = false }: { activeRoute?: boolean }) {
+export default function RadarCanvas() {
+  const events = useTelemetryStore((s) => s.events);
+
+  // Activate laser lines on FAST_TRACK_ROUTE events
+  const [activeRoute, setActiveRoute] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const routeTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const latest = events[0];
+
+    if (latest.event_class === 'FAST_TRACK_ROUTE') {
+      setActiveRoute(true);
+      // Pulse: show laser for 1.5s then fade
+      clearTimeout(routeTimeoutRef.current);
+      routeTimeoutRef.current = setTimeout(() => setActiveRoute(false), 1500);
+    }
+
+    if (latest.event_class === 'DRIFT_HEALED') {
+      setFlash(true);
+      setTimeout(() => setFlash(false), 200);
+    }
+  }, [events]);
+
   return (
     <div className="w-full h-full">
       <Canvas
@@ -200,7 +234,7 @@ export default function RadarCanvas({ activeRoute = false }: { activeRoute?: boo
         gl={{ antialias: true, alpha: false }}
         style={{ background: '#050505' }}
       >
-        <Scene activeRoute={activeRoute} />
+        <Scene activeRoute={activeRoute} flash={flash} />
         <OrbitControls
           enablePan={false}
           enableZoom={true}

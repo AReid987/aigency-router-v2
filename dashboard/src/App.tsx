@@ -1,9 +1,13 @@
-import RadarCanvas from './components/RadarCanvas';
-import SwarmTelemetry from './components/SwarmTelemetry';
-import ObservabilityDeck from './components/ObservabilityDeck';
-import BottomConsole from './components/BottomConsole';
+import { useTelemetry } from './hooks/useTelemetry'
+import RadarCanvas from './components/RadarCanvas'
+import SwarmTelemetry from './components/SwarmTelemetry'
+import ObservabilityDeck from './components/ObservabilityDeck'
+import BottomConsole from './components/BottomConsole'
 
 export default function App() {
+  // Mount telemetry SSE connection at top level
+  useTelemetry()
+
   return (
     <div className="w-screen h-screen bg-void font-mono grid grid-cols-[20%_1fr_20%] grid-rows-[1fr_20%] gap-px bg-crt-200">
       {/* Left Panel */}
@@ -26,5 +30,5 @@ export default function App() {
         <BottomConsole />
       </div>
     </div>
-  );
+  )
 }

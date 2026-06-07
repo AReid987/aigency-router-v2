@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { SugarDB } from './db.ts'
+import { createSseServer } from './sse.ts'
 
 describe('SugarDB', () => {
   let db: SugarDB
@@ -132,5 +133,76 @@ describe('SugarDB', () => {
       const s2 = db.status()
       assert.equal(s2.row_count, 1)
     })
+  })
+})
+
+describe('SSE Server', () => {
+  it('broadcasts events to connected clients', async () => {
+    const { server, broadcast, ready } = createSseServer(0)
+    const port = await ready
+
+    try {
+      const ac = new AbortController()
+      const res = await fetch(`http://127.0.0.1:${port}/events`, { signal: ac.signal })
+      assert.equal(res.status, 200)
+      assert.equal(res.headers.get('content-type'), 'text/event-stream')
+
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+
+      // Broadcast — client is already connected by the time fetch resolves
+      broadcast({
+        log_id: 1,
+        timestamp: '2024-01-01T00:00:00.000Z',
+        event_class: 'FAST_TRACK_ROUTE',
+        source_worker: 'gateway',
+        payload_snapshot: '{"model":"gpt-4"}',
+      })
+
+      // Read loop — skip the initial :ok comment, find data: line
+      let text = ''
+      for (let i = 0; i < 5; i++) {
+        const { value } = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
+        ])
+        text += decoder.decode(value)
+        if (text.includes('FAST_TRACK_ROUTE')) break
+      }
+
+      assert.ok(text.includes('data:'), 'should contain SSE data line')
+      assert.ok(text.includes('FAST_TRACK_ROUTE'), 'should contain the event class')
+
+      ac.abort()
+    } finally {
+      server.close()
+    }
+  })
+
+  it('returns health status', async () => {
+    const { server, ready } = createSseServer(0)
+    const port = await ready
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`)
+      assert.equal(res.status, 200)
+      const body = await res.json()
+      assert.equal(body.status, 'ok')
+      assert.equal(typeof body.clients, 'number')
+    } finally {
+      server.close()
+    }
+  })
+
+  it('returns 404 for unknown routes', async () => {
+    const { server, ready } = createSseServer(0)
+    const port = await ready
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/unknown`)
+      assert.equal(res.status, 404)
+    } finally {
+      server.close()
+    }
   })
 })

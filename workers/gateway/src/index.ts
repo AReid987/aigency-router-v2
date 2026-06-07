@@ -1,7 +1,8 @@
-import { registerWorker, type ISdk, type StreamChannelRef } from 'iii-sdk'
+import { registerWorker, type ISdk, type StreamChannelRef, ChannelReader } from 'iii-sdk'
 import { FailoverEngine, type RouteResult } from './failover.ts'
 import { callProvider, type Message, type StreamChunk, type ProviderResponse } from './provider-client.ts'
 import { logTelemetry, type EventClass } from '../../shared/telemetry.ts'
+import { createChatCompletionsHandler } from './http-handler.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 
@@ -35,6 +36,7 @@ interface ChannelWriter {
 export interface StreamingRouteResult {
   stream: true
   channelRef: StreamChannelRef
+  reader: ChannelReader
   provider: string
 }
 
@@ -112,7 +114,7 @@ async function streamWithFailover(
       pipeStreamToChannel(result as AsyncGenerator<StreamChunk>, channel.writer)
         .then(() => logEvent({ event: 'streaming_ended', model, provider: providerId }))
 
-      return { stream: true, channelRef: channel.writerRef, provider: providerId }
+      return { stream: true, channelRef: channel.writerRef, reader: channel.reader, provider: providerId }
     } catch (err: unknown) {
       if (err instanceof ProviderError) {
         const status = err.status
@@ -153,7 +155,7 @@ export interface RouteLlmInput {
 export interface RouteLlmDeps {
   resolveModel: (model: string) => Promise<{ model: string; providers: string[]; resolved: boolean }>
   getKey: (providerId: string) => Promise<string | null>
-  createChannel?: () => Promise<{ writer: { sendMessage: (msg: string) => void; close: () => void }; writerRef: StreamChannelRef }>
+  createChannel?: () => Promise<{ writer: { sendMessage: (msg: string) => void; close: () => void }; reader: ChannelReader; writerRef: StreamChannelRef }>
   callProvider?: typeof callProvider
 }
 
@@ -239,6 +241,14 @@ export function createGatewayWorker(url: string = ENGINE_URL): ISdk {
     const result = await iii.trigger({ function_id: input.target, payload: input.payload ?? {} })
     return { routed_to: input.target, result }
   })
+
+  // ── HTTP endpoint: POST /v1/chat/completions ──────────────────────
+  iii.registerTrigger({
+    type: 'http',
+    function_id: 'gateway::chat_completions',
+    config: { api_path: '/v1/chat/completions', http_method: 'POST' },
+  })
+  iii.registerFunction('gateway::chat_completions', createChatCompletionsHandler(iii))
 
   iii.registerFunction('gateway::route_llm', async (input: RouteLlmInput) => {
     logEvent({ event: 'route_llm_request', model: input.model })
