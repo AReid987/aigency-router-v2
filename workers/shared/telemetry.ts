@@ -13,6 +13,8 @@ export type EventClass =
   | 'KEY_ROTATED'
   | 'PROVIDER_RESOLVED'
   | 'SLM_CLASSIFY'
+  | 'CLUSTER_NODE_DISCOVERED'
+  | 'CLUSTER_NODE_LOST'
 
 export interface TelemetryEvent {
   eventClass: EventClass
