@@ -12,6 +12,7 @@ export type EventClass =
   | 'DRIFT_HEALED'
   | 'KEY_ROTATED'
   | 'PROVIDER_RESOLVED'
+  | 'SLM_CLASSIFY'
 
 export interface TelemetryEvent {
   eventClass: EventClass
