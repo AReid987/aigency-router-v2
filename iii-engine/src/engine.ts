@@ -60,6 +60,29 @@ interface LogFields {
   [key: string]: unknown;
 }
 
+interface FunctionMetrics {
+  functionId: string;
+  workerName: string;
+  calls: number;
+  errors: number;
+  timeouts: number;
+  totalMs: number;
+  minMs: number;
+  maxMs: number;
+  /** Latency histogram bucket counts: [<=10ms, <=50, <=100, <=500, <=1000, <=5000, <=30000, +Inf] */
+  buckets: number[];
+  /** Last call timestamp (ms since epoch) */
+  lastCallAt: number;
+}
+
+interface EngineMetrics {
+  startedAt: number;
+  totalCalls: number;
+  totalErrors: number;
+  totalTimeouts: number;
+  functions: Map<string, FunctionMetrics>;
+}
+
 export class Engine {
   private readonly wsPort: number;
   private readonly httpPort: number;
@@ -79,6 +102,13 @@ export class Engine {
   private httpTriggerWorker: WorkerInfo | null = null;
   private shuttingDown = false;
   private connections: Set<WebSocket> = new Set();
+  private readonly metrics: EngineMetrics = {
+    startedAt: Date.now(),
+    totalCalls: 0,
+    totalErrors: 0,
+    totalTimeouts: 0,
+    functions: new Map(),
+  };
 
   constructor(opts: EngineOptions = {}) {
     this.wsPort = opts.wsPort ?? 49134;
@@ -316,7 +346,7 @@ export class Engine {
     // Remember the http trigger worker
     if (msg.id === 'http') {
       this.httpTriggerWorker = worker;
-      this.log({ msg: 'http-trigger.assigned', workerId });
+      this.log({ msg: 'http-trigger.assigned', workerId, via: 'registertriggertype' });
     }
   }
 
@@ -327,7 +357,11 @@ export class Engine {
     if (!worker) return;
     const triggerType = msg.trigger_type ?? msg.type ?? '';
     worker.triggers.set(msg.id, { type: triggerType, functionId: msg.function_id, config: msg.config, metadata: msg.metadata });
-    this.log({ msg: 'trigger.registered', triggerId: msg.id, type: msg.type, functionId: msg.function_id, workerId });
+    this.log({ msg: 'trigger.registered', triggerId: msg.id, trigger_type: triggerType, functionId: msg.function_id, workerId });
+    if (triggerType === 'http' && !this.httpTriggerWorker) {
+      this.httpTriggerWorker = worker;
+      this.log({ msg: 'http-trigger.assigned', workerId, via: 'registertrigger' });
+    }
   }
 
   private handleUnregisterTrigger(workerId: string, msg: { id: string }): void {
@@ -424,22 +458,81 @@ export class Engine {
     return undefined;
   }
 
+  private recordInvocationStart(functionId: string, workerName: string): number {
+    this.metrics.totalCalls++;
+    const id = `${functionId}@${workerName}`;
+    let m = this.metrics.functions.get(id);
+    if (!m) {
+      m = {
+        functionId, workerName,
+        calls: 0, errors: 0, timeouts: 0, totalMs: 0,
+        minMs: Infinity, maxMs: 0,
+        buckets: [0, 0, 0, 0, 0, 0, 0, 0],
+        lastCallAt: 0,
+      };
+      this.metrics.functions.set(id, m);
+    }
+    m.lastCallAt = Date.now();
+    return Date.now();
+  }
+
+  private recordInvocationEnd(functionId: string, workerName: string, startMs: number, ok: boolean, errorKind?: 'error' | 'timeout'): void {
+    const id = `${functionId}@${workerName}`;
+    const m = this.metrics.functions.get(id);
+    if (!m) return;
+    const dur = Date.now() - startMs;
+    m.calls++;
+    m.totalMs += dur;
+    if (dur < m.minMs) m.minMs = dur;
+    if (dur > m.maxMs) m.maxMs = dur;
+    // Bucket counts: <=10, <=50, <=100, <=500, <=1000, <=5000, <=30000, +Inf
+    if (dur <= 10) m.buckets[0]!++;
+    else if (dur <= 50) m.buckets[1]!++;
+    else if (dur <= 100) m.buckets[2]!++;
+    else if (dur <= 500) m.buckets[3]!++;
+    else if (dur <= 1000) m.buckets[4]!++;
+    else if (dur <= 5000) m.buckets[5]!++;
+    else if (dur <= 30000) m.buckets[6]!++;
+    else m.buckets[7]!++;
+    if (!ok) {
+      m.errors++;
+      this.metrics.totalErrors++;
+      if (errorKind === 'timeout') {
+        m.timeouts++;
+        this.metrics.totalTimeouts++;
+      }
+    }
+  }
+
   private sendInvocation<T>(worker: WorkerInfo, functionId: string, payload: unknown): Promise<T> {
     const id = crypto.randomUUID();
 
+    const startMs = this.recordInvocationStart(functionId, worker.name);
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (this.pending.delete(id)) {
+          this.recordInvocationEnd(functionId, worker.name, startMs, false, 'timeout');
           reject(new Error(`invocation-timeout:${functionId}`));
         }
       }, this.timeout);
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timeout });
+      this.pending.set(id, {
+        resolve: (v: unknown) => {
+          this.recordInvocationEnd(functionId, worker.name, startMs, true);
+          resolve(v as T);
+        },
+        reject: (e: unknown) => {
+          this.recordInvocationEnd(functionId, worker.name, startMs, false, 'error');
+          reject(e);
+        },
+        timeout,
+      });
       const msg = { type: 'invokefunction', invocation_id: id, function_id: functionId, data: payload };
       if (worker.ws.readyState === WebSocket.OPEN) {
         worker.ws.send(JSON.stringify(msg));
       } else {
         clearTimeout(timeout);
         this.pending.delete(id);
+        this.recordInvocationEnd(functionId, worker.name, startMs, false, 'error');
         reject(new Error(`worker-not-connected:${worker.id}`));
       }
     });
@@ -447,6 +540,17 @@ export class Engine {
 
   // ---------------------------------------------------------------------------
   // HTTP handler (for client requests routed via gateway::http trigger)
+
+  private findHttpTriggerFunctionId(): string | null {
+    for (const worker of this.workers.values()) {
+      for (const trig of worker.triggers.values()) {
+        if (trig.type === 'http') return trig.functionId;
+      }
+    }
+    return null;
+  }
+
+
   // ---------------------------------------------------------------------------
 
   private httpHandler(req: IncomingMessage, res: ServerResponse): void {
@@ -465,14 +569,45 @@ export class Engine {
       return;
     }
     if (url === '/metrics') {
+      const functions: Array<Record<string, unknown>> = [];
+      for (const m of this.metrics.functions.values()) {
+        const avg = m.calls > 0 ? Math.round(m.totalMs / m.calls) : 0;
+        functions.push({
+          function: m.functionId,
+          worker: m.workerName,
+          calls: m.calls,
+          errors: m.errors,
+          timeouts: m.timeouts,
+          avg_ms: avg,
+          min_ms: m.minMs === Infinity ? 0 : m.minMs,
+          max_ms: m.maxMs,
+          p50_bucket_le_ms: m.buckets[2]! + m.buckets[3]!,  // <=100ms cumulative
+          p95_bucket_le_ms: m.buckets[4]! + m.buckets[5]! + m.buckets[6]!,  // <=5000ms
+          slow_calls: m.buckets[7]!,  // > 30s
+          last_call_at: m.lastCallAt,
+        });
+      }
       const metrics = {
-        workers: this.workers.size,
-        functions: [...this.workers.values()].reduce((n, w) => n + w.functions.size, 0),
-        triggers: [...this.workers.values()].reduce((n, w) => n + w.triggers.size, 0),
-        in_flight: this.pending.size,
+        engine: {
+          workers: this.workers.size,
+          functions_registered: [...this.workers.values()].reduce((n, w) => n + w.functions.size, 0),
+          triggers_registered: [...this.workers.values()].reduce((n, w) => n + w.triggers.size, 0),
+          in_flight: this.pending.size,
+        },
+        sla: {
+          started_at: this.metrics.startedAt,
+          uptime_ms: Date.now() - this.metrics.startedAt,
+          total_calls: this.metrics.totalCalls,
+          total_errors: this.metrics.totalErrors,
+          total_timeouts: this.metrics.totalTimeouts,
+          error_rate: this.metrics.totalCalls > 0
+            ? Math.round((this.metrics.totalErrors / this.metrics.totalCalls) * 10_000) / 100
+            : 0,
+        },
+        functions,
       };
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(metrics));
+      res.end(JSON.stringify(metrics, null, 2));
       return;
     }
     // CORS preflight
@@ -498,13 +633,23 @@ export class Engine {
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
       try {
+        // Parse body as JSON if content-type is JSON, else pass as string
+        let parsedBody: unknown = body;
+        const contentType = (req.headers['content-type'] as string) ?? '';
+        if (body && (contentType.includes('application/json') || body.startsWith('{') || body.startsWith('['))) {
+          try { parsedBody = JSON.parse(body); } catch { parsedBody = body; }
+        } else if (!body) {
+          parsedBody = undefined;
+        }
         const payload = {
           path: req.url ?? '/',
           method: req.method,
           headers: req.headers,
-          body: body || undefined,
+          body: parsedBody,
         };
-        const result = await this.sendInvocation(worker, 'gateway::http', payload) as { status?: number; headers?: Record<string, string>; body?: string };
+        // Use the function_id from the registered trigger, or fall back to gateway::http
+        const fnId = this.findHttpTriggerFunctionId() ?? 'gateway::http';
+        const result = await this.sendInvocation(worker, fnId, payload) as { status?: number; headers?: Record<string, string>; body?: string };
         res.writeHead(result.status ?? 200, {
           'content-type': 'application/json',
           'Access-Control-Allow-Origin': '*',
