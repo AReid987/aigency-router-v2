@@ -1,0 +1,35 @@
+{
+  "name": "iii-sdk",
+  "version": "0.17.0",
+  "private": true,
+  "type": "module",
+  "description": "III SDK TypeScript source declarations (local override for iii-sdk@0.17.0)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./stream": {
+      "import": "./dist/stream.js",
+      "types": "./dist/stream.d.ts"
+    },
+    "./state": {
+      "import": "./dist/state.js",
+      "types": "./dist/state.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "ws": "^8.0.0"
+  },
+  "engines": { "node": ">=18.0.0" }
+}

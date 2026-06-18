@@ -1,0 +1,34 @@
+{
+  "name": "iii-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "III IPC Engine - WebSocket hub for routing function calls between workers",
+  "main": "dist/engine.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/engine.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/engine.ts",
+    "start": "node --import tsx src/engine.ts",
+    "test": "node --test src/*.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
