@@ -9,7 +9,7 @@ let port: number;
 before(async () => {
   engine = new Engine({ wsPort: 0, httpPort: 0 });
   await engine.start();
-  port = (engine as any).wsServer.address().port;
+  port = (engine as any).boundHttpPort;
 });
 
 after(async () => {
@@ -73,7 +73,7 @@ test('Engine shuts down cleanly', async () => {
 test('worker registers function, caller triggers it, worker returns result', async () => {
   const localEngine = new Engine({ wsPort: 0, httpPort: 0 });
   await localEngine.start();
-  const localPort = (localEngine as any).wsServer.address().port;
+  const localPort = (localEngine as any).boundHttpPort;
   try {
     const ws = new WebSocket(`ws://127.0.0.1:${localPort}`);
     await new Promise<void>((res, rej) => { ws.once('open', () => res()); ws.once('error', rej); });
@@ -110,7 +110,7 @@ test('worker registers function, caller triggers it, worker returns result', asy
 test('invocation times out if worker does not respond', async () => {
   const localEngine = new Engine({ wsPort: 0, httpPort: 0, invocationTimeoutMs: 200 });
   await localEngine.start();
-  const localPort = (localEngine as any).wsServer.address().port;
+  const localPort = (localEngine as any).boundHttpPort;
   try {
     const ws = new WebSocket(`ws://127.0.0.1:${localPort}`);
     await new Promise<void>((res) => ws.once('open', () => res()));
@@ -153,7 +153,7 @@ test('GET /ready returns 503 when no http worker registered, 200 when registered
     assert.strictEqual(body1.ready, false);
 
     // Register an http trigger worker
-    const ws = new WebSocket(`ws://127.0.0.1:${(localEngine as any).wsServer.address().port}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${(localEngine as any).boundHttpPort}`);
     await new Promise<void>((res) => ws.once('open', () => res()));
     ws.send(JSON.stringify({ type: 'registertriggertype', id: 'http', description: 'HTTP' }));
     await new Promise((r) => setTimeout(r, 100));
@@ -186,7 +186,7 @@ test('GET /metrics returns engine stats', async () => {
 test('SLA: invocation latency and error counts are recorded', async () => {
   const localEngine = new Engine({ wsPort: 0, httpPort: 0 });
   await localEngine.start();
-  const localPort = (localEngine as any).wsServer.address().port;
+  const localPort = (localEngine as any).boundHttpPort;
   try {
     const ws = new WebSocket(`ws://127.0.0.1:${localPort}`);
     await new Promise<void>((res) => ws.once('open', () => res()));
@@ -228,7 +228,7 @@ test('SLA: invocation latency and error counts are recorded', async () => {
 test('SLA: timeout increments timeout counter', async () => {
   const localEngine = new Engine({ wsPort: 0, httpPort: 0, invocationTimeoutMs: 100 });
   await localEngine.start();
-  const localPort = (localEngine as any).wsServer.address().port;
+  const localPort = (localEngine as any).boundHttpPort;
   try {
     const ws = new WebSocket(`ws://127.0.0.1:${localPort}`);
     await new Promise<void>((res) => ws.once('open', () => res()));
@@ -254,28 +254,33 @@ test('SLA: timeout increments timeout counter', async () => {
 test('HTTP request is routed to worker via gateway::http trigger', async () => {
   const localEngine = new Engine({ wsPort: 0, httpPort: 0 });
   await localEngine.start();
-  const wsPort = (localEngine as any).wsServer.address().port;
+  const wsPort = (localEngine as any).boundHttpPort;
   const httpPort = (localEngine as any).httpServer.address().port;
 
   try {
     const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
     await new Promise<void>((res) => ws.once('open', () => res()));
 
-    // Set up the worker to respond to gateway::http
+    // Set up the worker to use the channel protocol — opens WS to the response channel,
+    // writes status + headers + body, then closes.
     ws.on('message', function listener(data: any) {
       const msg = JSON.parse(data.toString());
       if (msg.type === 'invokefunction' && msg.function_id === 'gateway::http') {
         ws.off('message', listener);
-        // Respond with a JSON body
-        ws.send(JSON.stringify({
-          type: 'invocationresult',
-          invocation_id: msg.invocation_id,
-          result: {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ ok: true, received: msg.data, bodyType: typeof msg.data?.body }),
-          },
-        }));
+        const responseRef = msg.data?.response;
+        if (!responseRef) {
+          ws.send(JSON.stringify({ type: 'invocationresult', invocation_id: msg.invocation_id, error: { code: 'NO_RESPONSE_REF' } }));
+          return;
+        }
+        const channelUrl = `ws://127.0.0.1:${httpPort}/ws/channels/${responseRef.channel_id}?key=${encodeURIComponent(responseRef.access_key)}&dir=write`;
+        const channelWs = new WebSocket(channelUrl);
+        channelWs.on('open', () => {
+          channelWs.send(JSON.stringify({ type: 'set_status', status_code: 200 }));
+          channelWs.send(JSON.stringify({ type: 'set_headers', headers: { 'content-type': 'application/json' } }));
+          channelWs.send(JSON.stringify({ ok: true, received: msg.data, bodyType: typeof msg.data?.body }));
+          channelWs.close();
+          ws.send(JSON.stringify({ type: 'invocationresult', invocation_id: msg.invocation_id, result: { status: 200 } }));
+        });
       }
     });
 
@@ -296,7 +301,7 @@ test('HTTP request is routed to worker via gateway::http trigger', async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ hello: 'world' }),
     });
-    const body = await res.json() as { ok: boolean; received: { method: string; path: string; body: string } };
+    const body = await res.json() as { ok: boolean; received: { method: string; path: string; body: unknown }; bodyType: string };
     assert.strictEqual(res.status, 200);
     assert.strictEqual(body.ok, true);
     assert.strictEqual(body.received.method, 'POST');
@@ -307,6 +312,67 @@ test('HTTP request is routed to worker via gateway::http trigger', async () => {
     } else {
       assert.strictEqual((receivedBody as { hello?: string })?.hello, 'world');
     }
+
+    ws.close();
+  } finally {
+    await localEngine.shutdown();
+  }
+});
+
+test('HTTP response supports streaming chunks', async () => {
+  const localEngine = new Engine({ wsPort: 0, httpPort: 0 });
+  await localEngine.start();
+  const boundPort = (localEngine as any).boundHttpPort;
+
+  try {
+    const ws = new WebSocket(`ws://127.0.0.1:${boundPort}`);
+    await new Promise<void>((res) => ws.once('open', () => res()));
+
+    // Set up streaming responder
+    ws.on('message', function listener(data: any) {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'invokefunction' && msg.function_id === 'stream::demo') {
+        ws.off('message', listener);
+        const responseRef = msg.data?.response;
+        if (!responseRef) {
+          ws.send(JSON.stringify({ type: 'invocationresult', invocation_id: msg.invocation_id, error: { code: 'NO_RESPONSE_REF' } }));
+          return;
+        }
+        const channelUrl = `ws://127.0.0.1:${boundPort}/ws/channels/${responseRef.channel_id}?key=${encodeURIComponent(responseRef.access_key)}&dir=write`;
+        const channelWs = new WebSocket(channelUrl);
+        channelWs.on('open', async () => {
+          channelWs.send(JSON.stringify({ type: 'set_status', status_code: 200 }));
+          channelWs.send(JSON.stringify({ type: 'set_headers', headers: { 'content-type': 'text/event-stream' } }));
+          // Stream 3 SSE-style chunks
+          for (const i of [1, 2, 3]) {
+            await new Promise((r) => setTimeout(r, 10));
+            channelWs.send(`data: chunk-${i}\n\n`);
+          }
+          channelWs.close();
+          ws.send(JSON.stringify({ type: 'invocationresult', invocation_id: msg.invocation_id, result: { status: 200 } }));
+        });
+      }
+    });
+
+    // Register the streaming trigger
+    ws.send(JSON.stringify({ type: 'registertriggertype', id: 'http', description: 'HTTP' }));
+    ws.send(JSON.stringify({
+      type: 'registertrigger',
+      id: 'stream-trigger',
+      trigger_type: 'http',
+      function_id: 'stream::demo',
+      config: { api_path: '/stream', http_method: 'GET' },
+    }));
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Make the request — read response as text stream
+    const res = await fetch(`http://127.0.0.1:${boundPort}/stream`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.headers.get('content-type'), 'text/event-stream');
+    const body = await res.text();
+    assert.ok(body.includes('chunk-1'), `body should contain chunk-1: ${body}`);
+    assert.ok(body.includes('chunk-2'), `body should contain chunk-2: ${body}`);
+    assert.ok(body.includes('chunk-3'), `body should contain chunk-3: ${body}`);
 
     ws.close();
   } finally {

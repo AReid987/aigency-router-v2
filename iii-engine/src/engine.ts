@@ -9,7 +9,7 @@ to invoke them. The engine handles correlation, routing, and channel bridging.
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { URL } from 'url';
-import type { Readable, Writable } from 'stream';
+
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,9 +97,14 @@ export class Engine {
   /** correlationId → pending call */
   private readonly pending = new Map<string, PendingCall>();
   /** channelId → { readWs, writeWs, readerCount, writerCount } */
-  private readonly channels = new Map<string, ChannelBridge>();
+  private readonly channels = new Map<string, ChannelState>();
 
   private httpTriggerWorker: WorkerInfo | null = null;
+
+  /** The actual bound port (after start()). Both worker WS and HTTP API listen here. */
+  public get port(): number {
+    return this.boundHttpPort;
+  }
   private shuttingDown = false;
   private connections: Set<WebSocket> = new Set();
   private readonly metrics: EngineMetrics = {
@@ -122,20 +127,26 @@ export class Engine {
   // ---------------------------------------------------------------------------
 
   async start(): Promise<void> {
-    this.wsServer = new WebSocketServer({ port: this.wsPort, noServer: false });
-    this.httpServer = createServer(this.httpHandler.bind(this));
+    // Use a single shared HTTP server. The worker WebSocketServer is in noServer mode
+    // so we can route upgrades through the HTTP server's upgrade event.
+    this.httpServer = createServer();
+    this.wsServer = new WebSocketServer({ noServer: true });
+    this.httpServer.on('request', this.httpHandler.bind(this));
+    this.httpServer.on('upgrade', this.handleUpgrade.bind(this));
 
     this.wsServer.on('connection', this.onWsConnection.bind(this));
     this.wsServer.on('error', (err) => this.log({ msg: 'ws-error', err: String(err) }));
 
     await new Promise<void>((res) => {
       this.httpServer!.listen(this.httpPort, () => {
-        this.log({ msg: 'engine.http.listening', port: this.httpPort });
+        const addr = this.httpServer!.address();
+        if (addr && typeof addr === 'object') this.boundHttpPort = addr.port;
+        this.log({ msg: 'engine.listening', port: this.boundHttpPort });
         res();
       });
     });
 
-    this.log({ msg: 'engine.started', wsPort: this.wsPort, httpPort: this.httpPort, pid: process.pid });
+    this.log({ msg: 'engine.started', wsPort: this.httpPort, httpPort: this.httpPort, pid: process.pid });
 
     // SIGTERM / SIGINT → graceful shutdown
     const shutdown = () => { if (!this.shuttingDown) this.shutdown().then(() => process.exit(0)); };
@@ -164,10 +175,12 @@ export class Engine {
     }
     this.workers.clear();
 
-    // Close channel bridges
+    // Close channel WebSocket connections
     for (const ch of this.channels.values()) {
-      try { ch.readable.destroy(); } catch {}
-      try { ch.writable.destroy(); } catch {}
+      try { ch.writeWs?.close(1001, 'engine-shutdown'); } catch {}
+      for (const ws of ch.readWss) {
+        try { ws.close(1001, 'engine-shutdown'); } catch {}
+      }
     }
     this.channels.clear();
 
@@ -229,9 +242,6 @@ export class Engine {
         case 'invokefunction':
           // Worker is calling a function (typically engine::workers::register)
           this.handleWorkerInvokeFunction(workerId, msg as any, send);
-          break;
-        case 'channelbridge':
-          this.handleChannelBridge(ws, msg as any);
           break;
         default:
           this.log({ msg: 'unknown-message-type', from: workerId, type: messageType });
@@ -301,6 +311,15 @@ export class Engine {
         for (const [id, trig] of w.triggers) list.push({ id, type: trig.type, function_id: trig.functionId, worker: w.name });
       }
       if (invocation_id) send({ type: 'invocationresult', invocation_id, result: list });
+      return;
+    }
+    if (fnId === 'engine::channels::create') {
+      const writer = this.createChannel();
+      const result = {
+        writer: { channel_id: writer.channelId, access_key: writer.writerKey, direction: 'write' as const },
+        reader: { channel_id: writer.channelId, access_key: writer.readerKey, direction: 'read' as const },
+      };
+      if (invocation_id) send({ type: 'invocationresult', invocation_id, result });
       return;
     }
     // Unknown engine function — fail with error
@@ -388,40 +407,7 @@ export class Engine {
     }
   }
 
-  private handleChannelBridge(ws: WebSocket, msg: {
-    channel_id: string; access_key?: string; direction: 'connect' | 'create';
-    channel_side: 'read' | 'write'; port?: number;
-  }): void {
-    // Channel bridging: connect two WebSocket halves
-    const { channel_id, direction, channel_side } = msg;
-    if (direction === 'connect') {
-      // Worker is connecting to an existing channel
-      const bridge = this.channels.get(channel_id);
-      if (!bridge) {
-        this.log({ msg: 'channel.not-found', channelId: channel_id });
-        return;
-      }
-      if (channel_side === 'write') {
-        bridge.writeWs = ws;
-        bridge.writerCount++;
-      } else {
-        bridge.readWs = ws;
-        bridge.readerCount++;
-      }
-      this.pipeChannel(bridge);
-    } else {
-      // Worker is creating a channel
-      if (channel_side === 'write') {
-        const bridge: ChannelBridge = { channelId: channel_id, readable: null!, writable: null!, writeWs: ws, readWs: null, readerCount: 0, writerCount: 1 };
-        this.channels.set(channel_id, bridge);
-      }
-    }
-  }
 
-  private pipeChannel(bridge: ChannelBridge): void {
-    if (!bridge.readable || !bridge.writable) return;
-    bridge.readable.pipe(bridge.writable);
-  }
 
   // ---------------------------------------------------------------------------
   // Public trigger API (used by HTTP handler and tests)
@@ -539,6 +525,62 @@ export class Engine {
   }
 
   // ---------------------------------------------------------------------------
+  // Channels — for streaming responses (used by SDK's http() wrapper)
+
+  private createChannel(): ChannelState {
+    const channelId = `ch_${crypto.randomUUID().slice(0, 8)}`;
+    const writerKey = `wk_${crypto.randomUUID().slice(0, 12)}`;
+    const readerKey = `rk_${crypto.randomUUID().slice(0, 12)}`;
+    const state: ChannelState = {
+      channelId,
+      writerKey,
+      readerKey,
+      writeWs: null,
+      readWss: new Set(),
+      createdAt: Date.now(),
+    };
+    this.channels.set(channelId, state);
+    this.log({ msg: 'channel.created', channelId });
+    return state;
+  }
+
+  /** Validate a channel connection and return the channel + role */
+  private validateChannelConnect(channelId: string, key: string, dir: string): { state: ChannelState; role: 'writer' | 'reader' } | null {
+    const state = this.channels.get(channelId);
+    if (!state) return null;
+    if (dir === 'write' && state.writerKey === key) return { state, role: 'writer' };
+    if (dir === 'read' && state.readerKey === key) return { state, role: 'reader' };
+    return null;
+  }
+
+  private attachChannelWriter(state: ChannelState, ws: WebSocket): void {
+    state.writeWs = ws;
+    ws.on('message', (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
+      // Forward writer frames to all readers
+      for (const readerWs of state.readWss) {
+        if (readerWs.readyState === readerWs.OPEN) {
+          readerWs.send(data, { binary: isBinary });
+        }
+      }
+    });
+    ws.on('close', () => {
+      // Close all readers too (writer closed = stream done)
+      for (const readerWs of state.readWss) {
+        try { readerWs.close(1000, 'writer-closed'); } catch {}
+      }
+      this.log({ msg: 'channel.writer-closed', channelId: state.channelId });
+    });
+  }
+
+  private attachChannelReader(state: ChannelState, ws: WebSocket): void {
+    state.readWss.add(ws);
+    ws.on('close', () => {
+      state.readWss.delete(ws);
+      this.log({ msg: 'channel.reader-closed', channelId: state.channelId, remaining: state.readWss.size });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // HTTP handler (for client requests routed via gateway::http trigger)
 
   private findHttpTriggerFunctionId(): string | null {
@@ -550,6 +592,53 @@ export class Engine {
     return null;
   }
 
+
+  // ---------------------------------------------------------------------------
+  // HTTP WebSocket upgrade router — routes worker upgrades and channel upgrades
+
+  private handleUpgrade(req: IncomingMessage, socket: any, head: Buffer): void {
+    const url = req.url ?? '/';
+    if (url.startsWith('/ws/channels/')) {
+      this.handleChannelUpgrade(req, socket, head, url);
+      return;
+    }
+    // All other paths (worker /, /ws, /otel, etc.) → main worker WSS
+    this.wsServer!.handleUpgrade(req, socket, head, (ws) => {
+      this.wsServer!.emit('connection', ws, req);
+    });
+  }
+
+  private handleChannelUpgrade(req: IncomingMessage, socket: any, head: Buffer, url: string): void {
+    const match = url.match(/^\/ws\/channels\/([A-Za-z0-9_\-]+)\?(.+)$/);
+    if (!match) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const channelId = match[1];
+    const params = new URLSearchParams(match[2]);
+    const key = params.get('key') ?? '';
+    const dir = params.get('dir') ?? '';
+
+    const validation = this.validateChannelConnect(channelId, key, dir);
+    if (!validation) {
+      this.log({ msg: 'channel.connect-denied', channelId, dir });
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const { state, role } = validation;
+
+    const wss = new WebSocketServer({ noServer: true });
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      this.log({ msg: 'channel.http-connected', channelId: state.channelId, role });
+      if (role === 'writer') {
+        this.attachChannelWriter(state, ws);
+      } else {
+        this.attachChannelReader(state, ws);
+      }
+    });
+  }
 
   // ---------------------------------------------------------------------------
 
@@ -641,27 +730,109 @@ export class Engine {
         } else if (!body) {
           parsedBody = undefined;
         }
+        // Create a channel for the HTTP response (worker writes to it via http() wrapper)
+        const channel = this.createChannel();
         const payload = {
           path: req.url ?? '/',
           method: req.method,
           headers: req.headers,
           body: parsedBody,
+          path_params: {},
+          query_params: this.parseQueryParams(req.url ?? '/'),
+          request_body: null,
+          response: {
+            channel_id: channel.channelId,
+            access_key: channel.writerKey,
+            direction: 'write' as const,
+          },
         };
         // Use the function_id from the registered trigger, or fall back to gateway::http
         const fnId = this.findHttpTriggerFunctionId() ?? 'gateway::http';
-        const result = await this.sendInvocation(worker, fnId, payload) as { status?: number; headers?: Record<string, string>; body?: string };
-        res.writeHead(result.status ?? 200, {
-          'content-type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          ...result.headers,
+
+        // Connect as a reader to the channel and forward to HTTP response
+        const readerWs = new WebSocket(this.buildChannelUrl(channel.channelId, channel.readerKey, 'read'));
+        let statusCode = 200;
+        const responseHeaders: Record<string, string> = { 'Access-Control-Allow-Origin': '*' };
+        let headersSet = false;
+        let bodyChunks: Buffer[] = [];
+
+        readerWs.on('open', () => {
+          // Now invoke the worker — it will open its own WS to the channel as writer
+          this.sendInvocation(worker, fnId, payload).catch((err) => {
+            this.log({ msg: 'http.invoke-error', err: String(err) });
+            if (!headersSet) {
+              res.writeHead(500, { 'content-type': 'application/json' });
+            }
+            res.end(JSON.stringify({ error: err.message ?? 'internal-error' }));
+            try { readerWs.close(); } catch {}
+          });
         });
-        res.end(result.body ?? '');
+
+        readerWs.on('message', (data: Buffer | string, isBinary: boolean) => {
+          if (!isBinary) {
+            // Text message: parse JSON, may be control (set_status/set_headers) or body
+            try {
+              const msg = JSON.parse(data.toString());
+              if (msg.type === 'set_status' && typeof msg.status_code === 'number') {
+                statusCode = msg.status_code;
+                return;
+              }
+              if (msg.type === 'set_headers' && msg.headers && typeof msg.headers === 'object') {
+                Object.assign(responseHeaders, msg.headers);
+                return;
+              }
+              // Not a control message — treat the raw text as body
+            } catch { /* not JSON, fall through to body */ }
+          }
+          // Body chunk (binary OR unhandled text)
+          bodyChunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+        });
+
+        readerWs.on('close', () => {
+          if (!headersSet) {
+            res.writeHead(statusCode, responseHeaders);
+            headersSet = true;
+          }
+          res.end(Buffer.concat(bodyChunks));
+        });
+
+        readerWs.on('error', (err) => {
+          this.log({ msg: 'channel.reader-error', err: String(err) });
+          if (!headersSet) {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'channel-error' }));
+          } else {
+            res.end();
+          }
+        });
       } catch (err: any) {
         this.log({ msg: 'http.invoke-error', err: String(err) });
-        res.writeHead(500, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message ?? 'internal-error' }));
+        if (!res.headersSent) {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message ?? 'internal-error' }));
+        }
       }
     });
+  }
+
+  private buildChannelUrl(channelId: string, key: string, dir: 'read' | 'write'): string {
+    return `ws://127.0.0.1:${this.boundHttpPort}/ws/channels/${channelId}?key=${encodeURIComponent(key)}&dir=${dir}`;
+  }
+
+  private parseQueryParams(url: string): Record<string, string | string[]> {
+    const qIdx = url.indexOf('?');
+    if (qIdx < 0) return {};
+    const params = new URLSearchParams(url.slice(qIdx + 1));
+    const out: Record<string, string | string[]> = {};
+    for (const [k, v] of params) {
+      if (k in out) {
+        const existing = out[k];
+        out[k] = Array.isArray(existing) ? [...existing, v] : [existing as string, v];
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
   }
 }
 
@@ -673,14 +844,15 @@ function wait(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-interface ChannelBridge {
+interface ChannelState {
   channelId: string;
-  readable: Readable;
-  writable: Writable;
+  writerKey: string;
+  readerKey: string;
+  /** WebSocket for the writer (worker side) */
   writeWs: WebSocket | null;
-  readWs: WebSocket | null;
-  readerCount: number;
-  writerCount: number;
+  /** WebSocket(s) for the readers (engine-side HTTP response, or other workers) */
+  readWss: Set<WebSocket>;
+  createdAt: number;
 }
 
 // ---------------------------------------------------------------------------

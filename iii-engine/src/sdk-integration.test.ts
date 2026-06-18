@@ -5,7 +5,7 @@ import { registerWorker } from 'iii-sdk';
 test('real iii-sdk worker can register against iii-engine', async () => {
   const engine = new Engine({ wsPort: 0, httpPort: 0 });
   await engine.start();
-  const port = (engine as any).wsServer.address().port;
+  const port = (engine as any).boundHttpPort;
 
   try {
     const iii = registerWorker(`ws://127.0.0.1:${port}`, { workerName: 'test-worker' });
