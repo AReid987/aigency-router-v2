@@ -16,7 +16,7 @@ test('E2E: HTTP request routed through engine to real iii-sdk worker via channel
   try {
     const iii = registerWorker(`ws://127.0.0.1:${wsPort}`, { workerName: 'smoke-gateway' });
 
-    iii.registerFunction('smoke::http', async (req: any) => {
+    iii.registerFunction('gateway::chat_completions', async (req: any) => {
       // The SDK's resolveChannelValue has already converted `response` from a StreamChannelRef
       // into a ChannelWriter that connects to the engine's channel.
       const responseWriter = req.response;
@@ -35,7 +35,7 @@ test('E2E: HTTP request routed through engine to real iii-sdk worker via channel
 
     iii.registerTrigger({
       type: 'http',
-      function_id: 'smoke::http',
+      function_id: 'gateway::chat_completions',
       config: { api_path: '/v1/chat/completions', http_method: 'POST' },
     });
 

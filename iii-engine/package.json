@@ -20,6 +20,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "iii-sdk": "/Users/antonioreid/CODE/00_PROJECTS/00_APPS/AIGENCY/aigency-router-v2/node_modules/.pnpm/iii-sdk@0.17.0/node_modules/iii-sdk",
     "ws": "^8.18.0"
   },
   "devDependencies": {
