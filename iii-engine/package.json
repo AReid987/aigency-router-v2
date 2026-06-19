@@ -16,7 +16,7 @@
     "build": "tsc",
     "dev": "tsx watch src/engine.ts",
     "start": "node --import tsx src/engine.ts",
-    "test": "node --test src/*.test.ts",
+    "test": "node --import tsx --test src/*.test.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
