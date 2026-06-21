@@ -35,3 +35,8 @@ coverage/
 .cache/
 tmp/
 .blackboxcli/
+
+# ── Python tempfiles ──
+*.tmp
+pyproject.toml.*_
+uv.lock.*
