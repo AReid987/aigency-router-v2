@@ -7,6 +7,9 @@ import sys
 
 from iii import register_worker, InitOptions
 
+from selector import Selector
+from heuristic_selector import HeuristicSelector
+
 logging.basicConfig(
     level=logging.INFO,
     format="[brain] %(message)s",
@@ -14,51 +17,36 @@ logging.basicConfig(
 logger = logging.getLogger("brain")
 
 ENGINE_URL = os.environ.get("III_URL", "ws://127.0.0.1:49134")
-
-# Timeout for selector worker delegation (milliseconds)
-SELECTOR_TIMEOUT_MS = 2000
+SELECTOR_KIND = os.environ.get("BRAIN_SELECTOR", "heuristic").lower()
 
 
-def _inline_heuristic(data: dict) -> dict:
-    """Inline heuristic classification (fallback when selector worker is unreachable)."""
-    model = data.get("model", "unknown")
-    messages = data.get("messages", [])
-    classification = "SIMPLE" if len(messages) <= 1 else "COMPLEX"
-    confidence = 0.9 if classification == "SIMPLE" else 0.75
-    return {
-        "classification": classification,
-        "confidence": confidence,
-        "model": model,
-        "message_count": len(messages),
-    }
+def build_selector(kind: str) -> Selector:
+    """Construct the configured selector. Falls back to HeuristicSelector on unknown kind."""
+    if kind == "slm":
+        try:
+            from llamacpp_selector import LLAMACppSelector
+            logger.info("Selector: LLAMACppSelector (embedded llama-cpp-python)")
+            return LLAMACppSelector()
+        except Exception as e:
+            logger.warning("LLAMACppSelector unavailable (%s), falling back to HeuristicSelector", e)
+            return HeuristicSelector()
+    logger.info("Selector: HeuristicSelector (default)")
+    return HeuristicSelector()
 
 
-def create_brain_worker(url: str = ENGINE_URL):
+def create_brain_worker(url: str = ENGINE_URL, selector: Selector = None):
     """Create and register the brain worker with the iii engine."""
+    if selector is None:
+        selector = build_selector(SELECTOR_KIND)
     iii = register_worker(url, InitOptions(worker_name="brain"))
 
     def classify(data):
-        """Classify a request — delegates to selector worker, falls back to inline heuristic."""
-        # Try delegating to selector iii worker
+        """Classify a request using the configured local selector."""
         try:
-            result = iii.trigger({
-                "function_id": "selector::classify",
-                "payload": data,
-                "timeout_ms": SELECTOR_TIMEOUT_MS,
-            })
-            # Map selector worker result to brain::classify output shape
-            logger.info("Classification delegated to selector-worker")
-            return {
-                "classification": result.get("classification", "COMPLEX"),
-                "confidence": result.get("confidence", 0.5),
-                "model": result.get("model", data.get("model", "unknown")),
-                "message_count": len(data.get("messages", [])),
-                "source": "selector-worker",
-            }
+            return selector.classify(data)
         except Exception as e:
-            # Selector worker unreachable or timed out — fall back to inline heuristic
-            logger.warning("Selector worker unavailable (%s), using brain-fallback", e)
-            fallback = _inline_heuristic(data)
+            logger.warning("Selector raised (%s), using fallback", e)
+            fallback = HeuristicSelector().classify(data)
             fallback["source"] = "brain-fallback"
             return fallback
 
@@ -68,6 +56,7 @@ def create_brain_worker(url: str = ENGINE_URL):
             "status": "healthy",
             "worker": "brain",
             "engine_url": ENGINE_URL,
+            "selector": SELECTOR_KIND,
         }
 
     iii.register_function("brain::classify", classify)
@@ -82,7 +71,6 @@ def main():
     iii = create_brain_worker(ENGINE_URL)
     logger.info("Brain worker registered — brain::classify and brain::status ready")
 
-    # Wait for shutdown signal
     def _signal_handler(sig, frame):
         logger.info("Shutdown signal received (%s)", sig)
         iii.shutdown()
@@ -90,8 +78,6 @@ def main():
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
-
-    # Block main thread
     signal.pause()
 
 

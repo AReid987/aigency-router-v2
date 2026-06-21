@@ -1,5 +1,9 @@
 packages:
   - 'workers/*'
   - 'dashboard'
+  - 'iii-sdk'
+  - 'iii-engine'
 onlyBuiltDependencies:
   - better-sqlite3
+  - esbuild
+  - protobufjs
