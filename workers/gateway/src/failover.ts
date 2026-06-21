@@ -55,10 +55,28 @@ export class FailoverEngine {
   private cooldowns = new Map<string, number>()
   private getKey: GetKeyFn
   private callProvider: CallProviderFn
+  /**
+   * Optional: try to heal a malformed provider response before falling through
+   * to the next provider. Returns a replacement ProviderResponse on success,
+   * null to fall through. Default: noop (heal disabled).
+   */
+  tryHeal: (rawBody: string) => Promise<ProviderResponse | null> = async () => null
 
   constructor(getKey: GetKeyFn, callProvider: CallProviderFn) {
     this.getKey = getKey
     this.callProvider = callProvider
+  }
+
+  /**
+   * Detect a malformed non-streaming response. Currently: empty content.
+   * Extend this as we learn more failure shapes (truncated JSON, etc.).
+   */
+  private isMalformedResponse(response: ProviderResponse | AsyncGenerator<StreamChunk, any, any>): boolean {
+    if (!response || typeof response !== 'object' || Symbol.asyncIterator in response) {
+      return false
+    }
+    const r = response as ProviderResponse
+    return !r.content || r.content.length === 0
   }
 
   isInCooldown(provider: string): boolean {
@@ -125,7 +143,16 @@ export class FailoverEngine {
           maxTokens: options.maxTokens,
           temperature: options.temperature,
         })
-        return { success: true, provider: providerId, response }
+        // Heuristic: for non-streaming responses, if the content looks malformed (empty),
+        // try to heal before declaring success. Streaming responses are passed through.
+        if (!options.stream && this.isMalformedResponse(response)) {
+          const rawBody = (response as ProviderResponse).content
+          const healed = await this.tryHeal(rawBody)
+          if (healed != null) {
+            return { success: true, provider: providerId, response: healed as ProviderResponse }
+          }
+        }
+        return { success: true, provider: providerId, response: response as ProviderResponse }
       } catch (err: unknown) {
         if (err instanceof ProviderError) {
           const status = err.status
