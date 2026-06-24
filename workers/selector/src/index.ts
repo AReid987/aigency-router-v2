@@ -48,9 +48,9 @@ export function createSelectorWorker(
 
   let selector: Selector | null = null
   let slmAvailable = false
-  let resolvedModel = factoryOptions.slmModel ?? 'qwen2.5:0.5b'
+  let resolvedModel = factoryOptions.modelPath ?? 'qwen2.5-0.5b-instruct-q4_k_m'
 
-  // Probe Ollama on startup
+  // Probe llama-cli + GGUF model availability on startup
   const ready = (async () => {
     try {
       selector = await createSelectorAsync(factoryOptions)

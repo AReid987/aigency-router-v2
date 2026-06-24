@@ -11,6 +11,7 @@
   },
   "devDependencies": {
     "@iii-dev/observability": "^0.17.0",
+    "@shelve/cli": "^5.2.0",
     "@types/node": "^22.0.0",
     "concurrently": "^9.0.0",
     "iii-sdk": "^0.17.0",
@@ -20,11 +21,5 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "packageManager": "pnpm@10.33.0",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "protobufjs"
-    ]
-  }
+  "packageManager": "pnpm@11.7.0"
 }

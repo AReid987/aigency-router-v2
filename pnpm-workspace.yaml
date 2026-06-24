@@ -1,5 +1,10 @@
 packages:
-  - 'workers/*'
-  - 'dashboard'
+  - "workers/*"
+  - "dashboard"
+  - "iii-engine"
+allowBuilds:
+  better-sqlite3: set this to true or false
+  esbuild: false
+  protobufjs: false
 onlyBuiltDependencies:
   - better-sqlite3

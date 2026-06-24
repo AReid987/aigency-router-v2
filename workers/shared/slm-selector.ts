@@ -1,43 +1,64 @@
 /**
- * SLMSelector — local SLM-backed classifier using Ollama.
+ * SLMSelector — local SLM-backed classifier using llama-cli.
  *
- * Wraps a small language model (default: qwen2.5:0.5b) to classify requests
- * as 'simple' or 'complex'. Falls back on timeout or error (caller handles).
+ * Wraps a small language model (default: qwen2.5-0.5b-instruct-q4_k_m)
+ * to classify requests as 'simple' or 'complex'. Falls back on timeout
+ * or error (caller handles).
  *
- * Requirements: Ollama running locally (default http://localhost:11434).
+ * Requirements: llama-cli binary on PATH, GGUF model file at configured path.
  */
 
-import { Ollama } from 'ollama'
+import {
+  classifyViaLlama,
+  getDefaultModelPath,
+  isLlamaBinaryAvailable,
+  isModelAvailable,
+  type LlamaClientConfig,
+} from './llama-client.ts'
 import type { ModelRequest, Classification } from '../vault/src/selector.ts'
 import { logTelemetry, type TelemetryDeps } from './telemetry.ts'
 
 export interface SLMSelectorConfig {
-  model?: string
-  ollamaUrl?: string
+  /** Path to the GGUF model file. Default: ~/.models/qwen2.5-0.5b-instruct-q4_k_m.gguf */
+  modelPath?: string
+  /** Inference timeout in milliseconds. Default: 500 */
   timeoutMs?: number
+  /** Path to llama-cli binary. Default: 'llama-cli' (resolved from PATH) */
+  binaryPath?: string
+  /** Number of threads for llama-cli. Default: 4 */
+  threads?: number
   telemetryDeps?: TelemetryDeps
   sourceWorker?: string
 }
 
 export class SLMSelector {
-  private readonly ollama: Ollama
-  private readonly model: string
+  private readonly modelPath: string
   private readonly timeoutMs: number
+  private readonly binaryPath: string
+  private readonly threads: number
   private readonly telemetryDeps?: TelemetryDeps
   private readonly sourceWorker: string
 
   constructor(config: SLMSelectorConfig = {}) {
-    this.model = config.model ?? 'qwen2.5:0.5b'
-    this.ollama = new Ollama({ host: config.ollamaUrl ?? 'http://localhost:11434' })
+    this.modelPath = config.modelPath ?? getDefaultModelPath()
+    this.binaryPath = config.binaryPath ?? 'llama-cli'
+    this.threads = config.threads ?? 4
     this.timeoutMs = config.timeoutMs ?? 500
     this.telemetryDeps = config.telemetryDeps
     this.sourceWorker = config.sourceWorker ?? 'slm-selector'
   }
 
   /**
+   * Check if the SLM is available (binary exists + model file exists).
+   */
+  isAvailable(): boolean {
+    return isLlamaBinaryAvailable(this.binaryPath) && isModelAvailable(this.modelPath)
+  }
+
+  /**
    * Classify a model request via local SLM.
    *
-   * @throws {Error} on timeout, malformed JSON, or Ollama connection failure.
+   * @throws {Error} on timeout, malformed JSON, or llama-cli spawn failure.
    */
   async classify(request: ModelRequest): Promise<Classification> {
     const messageCount = request.messages?.length ?? 0
@@ -57,31 +78,24 @@ export class SLMSelector {
 
     const start = Date.now()
 
-    const callPromise = this.ollama.chat({
-      model: this.model,
-      messages: [{ role: 'user', content: prompt }],
-      format: 'json',
-      stream: false,
-    })
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('SLM classification timeout')), this.timeoutMs),
-    )
-
-    let response: Awaited<typeof callPromise>
+    let jsonStr: string
     try {
-      response = await Promise.race([callPromise, timeoutPromise])
+      jsonStr = await classifyViaLlama(this.modelPath, prompt, {
+        binaryPath: this.binaryPath,
+        timeoutMs: this.timeoutMs,
+        threads: this.threads,
+      })
     } catch (err: unknown) {
       const latencyMs = Date.now() - start
       const msg = err instanceof Error ? err.message : String(err)
 
-      if (msg.includes('timeout') || msg.includes('abort')) {
+      if (msg.includes('timeout')) {
         throw new Error(`SLM classification timeout after ${latencyMs}ms`)
       }
-      if (msg.includes('ECONNREFUSED') || msg.includes('fetch failed') || msg.includes('connect')) {
-        throw new Error(`Ollama connection refused: ${msg}`)
+      if (msg.includes('ENOENT') || msg.includes('not found')) {
+        throw new Error(`llama-cli binary not found: ${this.binaryPath}`)
       }
-      throw new Error(`Ollama error: ${msg}`)
+      throw new Error(`llama-cli error: ${msg}`)
     }
 
     const latencyMs = Date.now() - start
@@ -89,7 +103,7 @@ export class SLMSelector {
     // Parse structured JSON response
     let parsed: { classification?: string; reason?: string }
     try {
-      parsed = JSON.parse(response.message.content)
+      parsed = JSON.parse(jsonStr)
     } catch {
       throw new Error('SLM returned malformed JSON')
     }
@@ -106,7 +120,7 @@ export class SLMSelector {
         eventClass: 'SLM_CLASSIFY',
         sourceWorker: this.sourceWorker,
         payload: {
-          model: this.model,
+          model: 'qwen2.5-0.5b-instruct-q4_k_m',
           latencyMs,
           classification,
           requestMessageCount: messageCount,
