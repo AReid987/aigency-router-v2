@@ -1,0 +1,296 @@
+# Instincts generated from https://github.com/AReid987/aigency-router-v2
+# Generated: 2026-06-21T08:53:03.559Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: aigency-router-v2-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Commit Length
+
+## Action
+
+Write moderate-length commit messages (~72 characters)
+
+## Evidence
+
+- Average commit message length: 72 chars
+- Based on 3 commits
+
+---
+id: aigency-router-v2-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: aigency-router-v2-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: aigency-router-v2-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Export Style
+
+## Action
+
+Prefer mixed exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: mixed
+
+---
+id: aigency-router-v2-instinct-file-naming
+trigger: "When creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct File Naming
+
+## Action
+
+Name the file using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.files
+
+---
+id: aigency-router-v2-instinct-function-naming
+trigger: "When defining a new function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Function Naming
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.functions
+
+---
+id: aigency-router-v2-instinct-class-naming
+trigger: "When defining a new class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Class Naming
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in namingConventions.classes
+
+---
+id: aigency-router-v2-instinct-constant-naming
+trigger: "When defining a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Constant Naming
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in namingConventions.constants
+
+---
+id: aigency-router-v2-instinct-import-style
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Import Style
+
+## Action
+
+Use relative imports
+
+## Evidence
+
+- Pattern in importStyle
+
+---
+id: aigency-router-v2-instinct-export-style
+trigger: "When exporting modules or functions"
+confidence: 0.6
+domain: code-style
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Export Style
+
+## Action
+
+Use either default or named exports as appropriate
+
+## Evidence
+
+- Pattern in exportStyle
+
+---
+id: aigency-router-v2-instinct-error-handling
+trigger: "When handling errors in code"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Error Handling
+
+## Action
+
+Use try-catch blocks for error handling
+
+## Evidence
+
+- Pattern in errorHandling.style
+
+---
+id: aigency-router-v2-instinct-git-commit-prefix
+trigger: "When writing a commit message for a new feature"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Git Commit Prefix
+
+## Action
+
+Prefix the commit message with 'feat:'
+
+## Evidence
+
+- Seen in commit 'feat: M001-M005 milestones — IPC engine, workers, SLM selector with llama.cpp'
+
+---
+id: aigency-router-v2-instinct-git-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Git Commit Length
+
+## Action
+
+Keep the commit message concise, around 72 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: aigency-router-v2-instinct-git-commit-gsd-snapshot
+trigger: "When committing uncommitted changes after inactivity"
+confidence: 0.8
+domain: git
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Git Commit Gsd Snapshot
+
+## Action
+
+Use 'gsd snapshot: pre-dispatch, uncommitted changes after [Xm] inactivity' as the commit message
+
+## Evidence
+
+- Seen in commit 'gsd snapshot: pre-dispatch, uncommitted changes after 177m inactivity'
+- Seen in commit 'gsd snapshot: pre-dispatch, uncommitted changes after 888m inactivity'
+
+---
+id: aigency-router-v2-instinct-test-location
+trigger: "When adding new tests"
+confidence: 0.6
+domain: testing
+source: repo-analysis
+source_repo: AReid987/aigency-router-v2
+---
+
+# Aigency Router V2 Instinct Test Location
+
+## Action
+
+Place test files in mixed locations (not strictly separated from source)
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
