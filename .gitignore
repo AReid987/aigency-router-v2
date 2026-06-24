@@ -50,3 +50,7 @@ com[1-9]
 com[1-9].*
 lpt[1-9]
 lpt[1-9].*
+# ── Python tempfiles ──
+*.tmp
+pyproject.toml.*_
+uv.lock.*

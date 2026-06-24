@@ -94,6 +94,9 @@ importers:
 
   iii-engine:
     dependencies:
+      iii-sdk:
+        specifier: workspace:*
+        version: link:../iii-sdk
       ws:
         specifier: ^8.18.0
         version: 8.21.0

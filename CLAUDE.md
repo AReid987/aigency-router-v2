@@ -104,6 +104,28 @@ bash scripts/verify-s06.sh    # full E2E — starts workers + curl + SSE + telem
 cd dashboard && pnpm run dev
 ```
 
+
+
+### Run the Chain
+
+```bash
+# 1. Start the iii engine (port 49134 = WS, 3111 = iii-http)
+iii --config iii.config.yaml >/dev/null 2>&1 &
+
+# 2. Start workers (each in its own terminal or & in background)
+node --import tsx workers/gateway/src/index.ts >/dev/null 2>&1 &
+node --import tsx workers/translator/src/index.ts >/dev/null 2>&1 &
+node --import tsx workers/vault/src/index.ts >/dev/null 2>&1 &
+
+# 3. Issue HTTP request through engine
+curl -X POST http://127.0.0.1:3111/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"echo","messages":[{"role":"user","content":"hello"}]}'
+
+# Or run the full smoke test (starts engine + workers + verifies chain)
+bash .gsd/scripts/smoke-s03.sh
+```
+
 ### Requirements
 
 All active requirements are tracked in `.gsd/REQUIREMENTS.md`. Priority order for M001 was: R006 (workers) → R003 (vault) → R001/R002 (routing) → R005 (streaming) → R007/R008 (failover/multiplexing) → R004 (drift correction) → R009/R010 (observability). M002 adds SLM routing; M003 adds DAG decomposition.

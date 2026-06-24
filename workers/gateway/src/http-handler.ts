@@ -10,6 +10,7 @@ import type { HttpRequest, HttpResponse, ISdk } from 'iii-sdk'
 import { http } from 'iii-sdk'
 import { routeLlm, type RouteLlmInput, type RouteLlmDeps, type StreamingRouteResult } from './index.ts'
 import type { RouteResult } from './failover.ts'
+import { SimpleDAGPlanner, hasCycle, topologicalOrder } from './dag-planner.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -94,6 +95,64 @@ export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvid
     if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
       writeErrorResponse(res, 400, "Missing required field: 'messages' (non-empty array)")
       return
+    }
+
+    // ── DAG planning (decompose multi-intent requests) ────────────
+    const planner = new SimpleDAGPlanner()
+    const dag = planner.plan({ model: body.model, messages: body.messages })
+
+    if (hasCycle(dag)) {
+      logEvent({ event: 'dag_cycle_rejected', nodes: dag.nodes.length })
+      writeErrorResponse(res, 400, 'Request DAG contains a cycle')
+      return
+    }
+
+    if (dag.nodes.length > 1) {
+      // Multi-intent request — execute nodes in topological order via iii-sdk trigger.
+      // Aggregator collects results and returns combined OpenAI response.
+      try {
+        const ordered = topologicalOrder(dag).map((id) => dag.nodes.find((n) => n.id === id)!)
+        const subResults: unknown[] = []
+        for (const node of ordered) {
+          const subResp = await iii.trigger({
+            function_id: node.function_id,
+            payload: node.payload,
+          })
+          subResults.push(subResp)
+        }
+        const aggregated = subResults[subResults.length - 1] as Record<string, unknown>
+        logEvent({
+          event: 'dag_aggregated',
+          nodes: dag.nodes.length,
+          order: topologicalOrder(dag),
+        })
+        res.statusCode = 200
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({
+          id: `chatcmpl-${Date.now()}`,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: body.model,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: typeof aggregated?.['content'] === 'string'
+                  ? (aggregated['content'] as string)
+                  : JSON.stringify(aggregated),
+              },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }))
+        return
+      } catch (err) {
+        logEvent({ event: 'dag_aggregation_failed', error: String(err) })
+        writeErrorResponse(res, 500, `DAG aggregation failed: ${err}`)
+        return
+      }
     }
 
     // ── Fire-and-forget brain classification ────────────────────────

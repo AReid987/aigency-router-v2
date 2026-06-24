@@ -91,6 +91,7 @@ export class Engine {
 
   private wsServer: WebSocketServer | null = null;
   private httpServer: ReturnType<typeof createServer> | null = null;
+  private boundHttpPort: number = 0;
 
   /** workerId → WorkerInfo */
   private readonly workers = new Map<string, WorkerInfo>();
@@ -746,8 +747,13 @@ export class Engine {
             direction: 'write' as const,
           },
         };
-        // Use the function_id from the registered trigger, or fall back to gateway::http
-        const fnId = this.findHttpTriggerFunctionId() ?? 'gateway::http';
+        // Path-specific routing for OpenAI-compatible endpoints
+        const path = req.url ?? '/';
+        const pathFnId: Record<string, string> = {
+          '/v1/chat/completions': 'gateway::chat_completions',
+        };
+        const fnId = pathFnId[path] ?? this.findHttpTriggerFunctionId() ?? 'gateway::http';
+        this.log({ msg: 'http.route', path, fnId });
 
         // Connect as a reader to the channel and forward to HTTP response
         const readerWs = new WebSocket(this.buildChannelUrl(channel.channelId, channel.readerKey, 'read'));

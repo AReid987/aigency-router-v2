@@ -6,24 +6,24 @@
  *
  * ## Endpoints (all on httpPort, default 3000)
  *
- * | Method | Path                   | Auth | Description                          |
- * |--------|------------------------|------|--------------------------------------|
- * | POST   | /v1/chat/completions  | -    | Route to gateway::http trigger (via channel) |
- * | GET    | /health               | -    | Liveness check                        |
- * | GET    | /ready                | -    | Readiness (true once HTTP trigger worker registered) |
- * | GET    | /metrics              | -    | Structured metrics JSON                |
- * | OPTIONS| *                     | -    | CORS preflight                         |
+ * | Method | Path                   | Route Function              | Description                          |
+ * |--------|------------------------|-----------------------------|--------------------------------------|
+ * | POST   | /v1/chat/completions  | gateway::chat_completions   | OpenAI-compatible chat completions    |
+ * | POST   | *                     | gateway::http (default)     | Generic HTTP trigger routing           |
+ * | GET    | /health               | (builtin)                   | Liveness check                        |
+ * | GET    | /ready                | (builtin)                   | Readiness (true once HTTP trigger worker registered) |
+ * | GET    | /metrics              | (builtin)                   | Structured metrics JSON                |
+ * | OPTIONS| *                     | (builtin)                   | CORS preflight                         |
  *
- * ## POST /v1/chat/completions
+ * ## Path-Specific Routing
  *
- * Accepts the OpenAI-compatible chat completions body. Creates a channel and routes
- * to the registered gateway::http trigger via the worker's HTTP trigger handler.
- * The worker writes its response (status codes, headers, body chunks) back to the
- * channel; this handler reads those chunks and forwards them to the HTTP client.
+ * The engine uses a path → function_id mapping. Workers can register the
+ * appropriate function under the expected function_id:
  *
- * Workers register HTTP trigger capability by calling:
- *   sdk.registerTriggerType({ id: 'http' })
- *   sdk.registerTrigger({ id: 'http-gateway', type: 'http', function_id: 'gateway::http' })
+ *   sdk.registerFunction({
+ *     id: 'gateway::chat_completions',
+ *     handler: async (req) => { ... },
+ *   });
  *
  * ## Streaming (SSE)
  *
@@ -31,6 +31,10 @@
  *   { type: 'set_status', status_code: 200 }
  *   { type: 'set_headers', headers: { 'content-type': 'text/event-stream' } }
  *   <binary SSE chunks>
+ *
+ * Workers register HTTP trigger capability by calling:
+ *   sdk.registerTriggerType({ id: 'http' })
+ *   sdk.registerTrigger({ id: 'http-gateway', type: 'http', function_id: 'gateway::http' })
  *
  * ## Usage (programmatic)
  *
