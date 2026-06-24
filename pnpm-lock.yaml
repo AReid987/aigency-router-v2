@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
     devDependencies:
       '@iii-dev/observability':
         specifier: ^0.17.0
@@ -100,6 +107,19 @@ importers:
       tsx:
         specifier: ^4.19.0
         version: 4.22.4
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  iii-sdk:
+    dependencies:
+      ws:
+        specifier: ^8.0.0
+        version: 8.21.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.19
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
