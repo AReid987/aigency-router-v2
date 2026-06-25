@@ -1,0 +1,13 @@
+{
+  "comment": "Claude Code integration with Aigency Router",
+  "env": {
+    "AIGENCY_BASE_URL": "http://localhost:8787",
+    "AIGENCY_API_KEY": "sk-aigency-your-key-here"
+  },
+  "claude_code_config": {
+    "api_base_url": "${AIGENCY_BASE_URL}",
+    "api_key": "${AIGENCY_API_KEY}",
+    "model": "gpt-4",
+    "max_retries": 3
+  }
+}
