@@ -15,6 +15,9 @@ export type EventClass =
   | 'SLM_CLASSIFY'
   | 'CLUSTER_NODE_DISCOVERED'
   | 'CLUSTER_NODE_LOST'
+  | 'OFFLOAD_DECISION'
+  | 'OFFLOAD_FORWARDED'
+  | 'OFFLOAD_FALLBACK'
 
 export interface TelemetryEvent {
   eventClass: EventClass

@@ -15,6 +15,9 @@ import { createSelectorAsync, type SelectorFactoryOptions } from '../../shared/s
 import { SLMSelector } from '../../shared/slm-selector.ts'
 import { logTelemetry } from '../../shared/telemetry.ts'
 import type { Selector, ModelRequest, Classification } from '../../vault/src/selector.ts'
+import { startHealthEndpoint, waitForHealthEndpoint } from './health-endpoint.ts'
+import { ClusterDiscovery, HttpTailscaleTransport } from '../../shared/cluster-discovery.ts'
+import { OffloadRouter } from '../../shared/offload-router.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 
@@ -33,6 +36,11 @@ interface ClassifyResult {
   latencyMs: number
 }
 
+interface OffloadRouterState {
+  router: OffloadRouter
+  discovery: ClusterDiscovery
+}
+
 interface StatusResult {
   status: 'healthy'
   worker: 'selector'
@@ -44,11 +52,27 @@ export function createSelectorWorker(
   url: string = ENGINE_URL,
   factoryOptions: SelectorFactoryOptions = {},
 ): { iii: ISdk; ready: Promise<void> } {
+  // Store health handle in outer scope so shutdown handlers can access it
+  let healthHandle: ReturnType<typeof startHealthEndpoint> | null = null
   const iii = registerWorker(url, { workerName: 'selector' })
 
   let selector: Selector | null = null
   let slmAvailable = false
   let resolvedModel = factoryOptions.modelPath ?? 'qwen2.5-0.5b-instruct-q4_k_m'
+  const offloadEnabled = process.env.SELECTOR_OFFLOAD_ENABLED === 'true'
+  const peersUrl = process.env.SELECTOR_PEERS_URL
+  let offloadState: OffloadRouterState | null = null
+
+  // Derive a human-readable model name from the model path for the health endpoint
+  const healthModelName = resolvedModel
+    .replace(/.*[/\\]/, '')   // strip directory
+    .replace(/\.[^.]+$/, '')   // strip extension
+
+  // Health endpoint (optional, gated by SELECTOR_HEALTH_PORT env)
+  const healthPortRaw = process.env.SELECTOR_HEALTH_PORT
+  healthHandle = healthPortRaw !== undefined && healthPortRaw !== '' && healthPortRaw !== 'disabled'
+    ? startHealthEndpoint(parseInt(healthPortRaw, 10) || 0, healthModelName, { current: 'healthy' })
+    : null
 
   // Probe llama-cli + GGUF model availability on startup
   const ready = (async () => {
@@ -59,6 +83,25 @@ export function createSelectorWorker(
         `[selector] Initialized with ${slmAvailable ? 'SLMSelector' : 'HeuristicSelector'}` +
         (slmAvailable ? ` (model: ${resolvedModel})` : ' (fallback)'),
       )
+
+      // When offload is enabled, wrap the selector in an OffloadRouter
+      // that forwards classification to healthy cluster peers.
+      if (offloadEnabled && selector) {
+        const discovery = new ClusterDiscovery(
+          { telemetryDeps: undefined, sourceWorker: 'selector' },
+          new HttpTailscaleTransport(peersUrl),
+        )
+        await discovery.start()
+        offloadState = {
+          router: new OffloadRouter({
+            localSelector: selector,
+            clusterDiscovery: discovery,
+            telemetryDeps: undefined,
+          }),
+          discovery,
+        }
+        console.log(`[selector] OffloadRouter enabled (peers: ${peersUrl ?? 'default'})`)
+      }
     } catch (err) {
       console.warn('[selector] Factory probe failed, using HeuristicSelector:', err)
       const { HeuristicSelector } = await import('../../vault/src/selector.ts')
@@ -66,6 +109,11 @@ export function createSelectorWorker(
       slmAvailable = false
     }
   })()
+
+  // Wait for health endpoint to be ready after selector is initialized
+  if (healthHandle) {
+    ready.then(() => waitForHealthEndpoint(healthHandle).catch(() => {}))
+  }
 
   iii.registerFunction('selector::classify', async (input: ClassifyInput): Promise<ClassifyResult> => {
     // Ensure selector is initialized
@@ -91,10 +139,18 @@ export function createSelectorWorker(
     const start = Date.now()
 
     try {
-      // SLMSelector.classify() is async; HeuristicSelector.classify() is sync.
-      // We handle both by checking and awaiting if needed.
-      const result = selector.classify(request)
-      const classification: Classification = result instanceof Promise ? await result : result
+      let classification: Classification
+
+      if (offloadState) {
+        // Offload to peer cluster if a healthy peer is available
+        classification = await offloadState.router.classify(request)
+      } else {
+        // SLMSelector.classify() is async; HeuristicSelector.classify() is sync.
+        // We handle both by checking and awaiting if needed.
+        const result = selector.classify(request)
+        classification = result instanceof Promise ? await result : result
+      }
+
       const latencyMs = Date.now() - start
 
       // Emit telemetry
