@@ -13,8 +13,10 @@ import type { RouteResult } from './failover.ts'
 import { SimpleDAGPlanner, hasCycle, topologicalOrder } from './dag-planner.ts'
 import { logTelemetry, type EventClass } from '../../shared/telemetry.ts'
 import { QuotaMonitor } from './zero-cost/quota_monitor.ts'
-import { InMemoryUsageTracker } from './zero-cost/usage_tracker.ts'
+import { InMemoryUsageTracker, UsageTracker } from './zero-cost/usage_tracker.ts'
 import type { IUsageTracker } from './zero-cost/usage_tracker.ts'
+import { TierClassifier } from './zero-cost/tier_classifier.ts'
+import { ZeroCostCircuitBreaker } from './zero-cost/circuit_breaker.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -85,11 +87,35 @@ let _quotaMonitor: QuotaMonitor | null = null
 function ensureQuotaMonitor(): QuotaMonitor | null {
   if (process.env.GATEWAY_QUOTA_MONITORING !== 'true') return null
   if (_quotaMonitor === null) {
-    const tracker = new InMemoryUsageTracker()
+    // Use zero-cost usage tracker when enforcement is active (catches real request counts).
+    // Fall back to InMemoryUsageTracker when zero-cost is not enabled.
+    const tracker: IUsageTracker = _zcUsageTracker ?? new InMemoryUsageTracker()
     _quotaMonitor = new QuotaMonitor(tracker)
     _quotaMonitor.start()
   }
   return _quotaMonitor
+}
+
+// ── Module-level ZeroCostCircuitBreaker (lazy, gated on env var) ──────
+
+let _circuitBreaker: ZeroCostCircuitBreaker | null = null
+let _zcUsageTracker: UsageTracker | null = null
+
+function ensureZeroCostBreaker(iii: ISdk): { circuitBreaker: ZeroCostCircuitBreaker; usageTracker: UsageTracker } | null {
+  if (process.env.GATEWAY_ZERO_COST_ENFORCEMENT !== 'true') return null
+  if (_circuitBreaker === null) {
+    const dbPath = process.env.GATEWAY_ZERO_COST_DB_PATH ?? './data/usage.db'
+    const tracker = new UsageTracker(dbPath)
+    _zcUsageTracker = tracker
+    tracker.setFreeTierLimit('groq', parseInt(process.env.GATEWAY_ZERO_COST_GROQ_LIMIT ?? '1000', 10))
+    tracker.setFreeTierLimit('cerebras', parseInt(process.env.GATEWAY_ZERO_COST_CEREBRAS_LIMIT ?? '500', 10))
+    tracker.setFreeTierLimit('together', parseInt(process.env.GATEWAY_ZERO_COST_TOGETHER_LIMIT ?? '800', 10))
+    _circuitBreaker = new ZeroCostCircuitBreaker(tracker, {
+      trigger: (target: string, fnName: string, payload: unknown) =>
+        iii.trigger({ function_id: fnName, payload: payload as Record<string, unknown> }),
+    })
+  }
+  return { circuitBreaker: _circuitBreaker, usageTracker: _zcUsageTracker! }
 }
 
 // ── HTTP Handler ───────────────────────────────────────────────────────
@@ -306,6 +332,51 @@ export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvid
       callProvider: overrides?.callProvider,
     }
 
+    // ── Zero-cost enforcement (pre-filter providers) ─────────────
+    let _zcUsageRef: UsageTracker | null = null
+    if (process.env.GATEWAY_ZERO_COST_ENFORCEMENT === 'true') {
+      const zc = ensureZeroCostBreaker(iii)
+      if (zc) {
+        _zcUsageRef = zc.usageTracker
+        const resolved = await iii.trigger({ function_id: 'translator::resolve', payload: { model: body.model } })
+        const resolvedProviders = ((resolved as { providers?: string[] }).providers ?? [])
+
+        const filtered: string[] = []
+        const refusedReasons: string[] = []
+
+        for (const providerEntry of resolvedProviders) {
+          const providerId = providerEntry.includes('/') ? providerEntry.split('/')[0] : providerEntry
+          const cbResult = await zc.circuitBreaker.check(providerId, providerId)
+          if (cbResult.allowed) {
+            filtered.push(providerEntry)
+          } else if (cbResult.reason) {
+            refusedReasons.push(cbResult.reason)
+          }
+        }
+
+        if (filtered.length === 0) {
+          const uniqueReasons = [...new Set(refusedReasons)]
+          logEvent({
+            event: 'zero_cost_all_refused',
+            model: body.model,
+            reasons: uniqueReasons,
+          })
+          res.status(503)
+          res.headers({ 'content-type': 'application/json' })
+          res.stream.end(JSON.stringify({ error: { code: 'no_healthy_provider', reasons: uniqueReasons } }))
+          res.close()
+          return
+        }
+
+        // Override resolveModel to use pre-filtered providers
+        deps.resolveModel = async () => ({
+          model: body.model,
+          providers: filtered,
+          resolved: true,
+        })
+      }
+    }
+
     const input: RouteLlmInput = {
       model: body.model,
       messages: body.messages.map(m => ({ role: m.role as 'system' | 'user' | 'assistant', content: m.content })),
@@ -317,6 +388,18 @@ export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvid
     // ── Route LLM request ───────────────────────────────────────────
     try {
       const result = await routeLlm(input, deps)
+
+      // ── Record usage for zero-cost enforcement ──────────────────
+      if (_zcUsageRef) {
+        if (!('stream' in result) && 'success' in result && (result as RouteResult).success) {
+          const routeResult = result as RouteResult
+          const tokens = (routeResult.response as { usage?: { totalTokens: number } })?.usage?.totalTokens ?? 0
+          _zcUsageRef.record(routeResult.provider, routeResult.provider, tokens)
+        } else if ('stream' in result && (result as StreamingRouteResult).stream) {
+          const streamResult = result as StreamingRouteResult
+          _zcUsageRef.record(streamResult.provider, streamResult.provider, 0)
+        }
+      }
 
       // Streaming path
       if (body.stream && 'stream' in result && result.stream) {
