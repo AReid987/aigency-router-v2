@@ -11,6 +11,7 @@ import { http } from 'iii-sdk'
 import { routeLlm, type RouteLlmInput, type RouteLlmDeps, type StreamingRouteResult } from './index.ts'
 import type { RouteResult } from './failover.ts'
 import { SimpleDAGPlanner, hasCycle, topologicalOrder } from './dag-planner.ts'
+import { logTelemetry, type EventClass } from '../../shared/telemetry.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -97,6 +98,91 @@ export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvid
       return
     }
 
+    // ── Gate: Complex-request gating via Engram pipeline (opt-in) ──
+    const useEngramPipeline = process.env.GATEWAY_USE_ENGRAM_PIPELINE === 'true'
+
+    if (useEngramPipeline) {
+      const telemetryTrigger = (target: string, fnName: string, payload: unknown) =>
+        iii.trigger({ function_id: fnName, payload: payload as Record<string, unknown> })
+
+      try {
+        const classifyResult = await iii.trigger({
+          function_id: 'brain::classify',
+          payload: { model: body.model, messages: body.messages },
+        }) as { classification: string; confidence: number }
+
+        logTelemetry({ trigger: telemetryTrigger }, {
+          eventClass: 'GATEWAY_CLASSIFY_DECISION',
+          sourceWorker: 'gateway',
+          payload: {
+            classification: classifyResult.classification,
+            confidence: classifyResult.confidence,
+            requestId: generateRequestId(),
+            model: body.model,
+          },
+        }).catch(() => {})
+
+        if (classifyResult.classification === 'COMPLEX') {
+          logTelemetry({ trigger: telemetryTrigger }, {
+            eventClass: 'GATEWAY_ENGRAM_PIPELINE_TRIGGERED',
+            sourceWorker: 'gateway',
+            payload: { requestId: generateRequestId(), reason: 'complex_request' },
+          }).catch(() => {})
+
+          const engramResult = await iii.trigger({
+            function_id: 'engram::orchestrate',
+            payload: { model: body.model, messages: body.messages },
+          }) as Record<string, unknown>
+
+          const content = typeof engramResult?.content === 'string'
+            ? engramResult.content
+            : JSON.stringify(engramResult)
+
+          if (body.stream) {
+            res.status(200)
+            res.headers({
+              'content-type': 'text/event-stream',
+              'cache-control': 'no-cache',
+              'connection': 'keep-alive',
+            })
+            const chunk = {
+              id: generateRequestId(),
+              object: 'chat.completion.chunk',
+              choices: [{ index: 0, delta: { content }, finish_reason: 'stop' }],
+            }
+            res.stream.write(`data: ${JSON.stringify(chunk)}\n\n`)
+            res.stream.write('data: [DONE]\n\n')
+            res.close()
+            return
+          }
+
+          const response: OpenAICompletionResponse = {
+            id: generateRequestId(),
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: body.model,
+            choices: [{
+              index: 0,
+              message: { role: 'assistant', content },
+              finish_reason: 'stop',
+            }],
+          }
+          writeJSONResponse(res, response)
+          return
+        }
+
+        // SIMPLE — emit telemetry and fall through to existing handler
+        logTelemetry({ trigger: telemetryTrigger }, {
+          eventClass: 'GATEWAY_FAST_PATH',
+          sourceWorker: 'gateway',
+          payload: { requestId: generateRequestId(), reason: 'simple_request' },
+        }).catch(() => {})
+      } catch (err) {
+        logEvent({ event: 'gateway_pipeline_classify_failed', error: String(err) })
+        // Fall through to existing handler
+      }
+    }
+
     // ── DAG planning (decompose multi-intent requests) ────────────
     const planner = new SimpleDAGPlanner()
     const dag = planner.plan({ model: body.model, messages: body.messages })
@@ -155,18 +241,20 @@ export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvid
       }
     }
 
-    // ── Fire-and-forget brain classification ────────────────────────
-    iii.trigger({
-      function_id: 'brain::classify',
-      payload: { model: body.model, messages: body.messages },
-    }).then((resp) => {
-      logEvent({
-        event: 'brain_classification',
-        ...(resp as Record<string, unknown>),
+    // ── Fire-and-forget brain classification (skipped when engram pipeline is active) ─
+    if (!useEngramPipeline) {
+      iii.trigger({
+        function_id: 'brain::classify',
+        payload: { model: body.model, messages: body.messages },
+      }).then((resp) => {
+        logEvent({
+          event: 'brain_classification',
+          ...(resp as Record<string, unknown>),
+        })
+      }).catch((err) => {
+        logEvent({ event: 'brain_classification_failed', error: String(err) })
       })
-    }).catch((err) => {
-      logEvent({ event: 'brain_classification_failed', error: String(err) })
-    })
+    }
 
     // ── Build deps for routeLlm ─────────────────────────────────────
     const deps: RouteLlmDeps = {

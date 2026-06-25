@@ -3,6 +3,7 @@ import { healJson, type HealJsonDeps, type Message } from './heal-json.js'
 import { parse as parseGate, evaluate as evaluateGate } from './quality_gate.js'
 import { HallucinationDetector } from './hallucination_detector.js'
 import { logTelemetry } from '../../shared/telemetry.ts'
+import { orchestrate, type OrchestrateInput } from './orchestrate.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 
@@ -147,6 +148,44 @@ export function registerEngramFunctions(iii: ISdk): void {
         hallucination_score: null,
       }
     }
+  })
+
+  // ── engram::orchestrate (Full Pipeline Orchestrator) ────────────
+  iii.registerFunction('engram::orchestrate', async (input: OrchestrateInput) => {
+    if (!input || !Array.isArray(input.messages) || typeof input.model !== 'string') {
+      return {
+        content: '',
+        finishReason: 'stop' as const,
+        metadata: {
+          stagesCompleted: 0,
+          peerReviewConsensus: 0,
+          gatesPassed: 0,
+          gatesFailed: 1,
+          retriesUsed: 0,
+          nodeCount: 0,
+          dagId: '',
+          stageDetails: [],
+        },
+      }
+    }
+
+    const telemetryTrigger = (target: string, fnName: string, payload: unknown) =>
+      iii.trigger({ function_id: fnName, payload: payload as Record<string, unknown> })
+
+    const deps = {
+      trigger: async (fnId: string, payload: Record<string, unknown>): Promise<unknown> => {
+        return iii.trigger({ function_id: fnId, payload })
+      },
+      emitTelemetry: async (eventClass: string, payload: Record<string, unknown>) => {
+        await logTelemetry({ trigger: telemetryTrigger }, {
+          eventClass: eventClass as any,
+          sourceWorker: 'engram',
+          payload,
+        }).catch(() => {})
+      },
+    }
+
+    return orchestrate(input, deps)
   })
 
   // Register heal_json function (T03: Worker Wiring + Integration)
