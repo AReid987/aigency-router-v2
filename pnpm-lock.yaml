@@ -148,6 +148,12 @@ importers:
 
   workers/gateway:
     dependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
+      better-sqlite3:
+        specifier: ^11.10.0
+        version: 11.10.0
       iii-sdk:
         specifier: ^0.17.0
         version: 0.17.0

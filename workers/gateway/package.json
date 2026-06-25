@@ -8,11 +8,13 @@
     "test": "node --test src/index.test.ts src/provider-client.test.ts src/failover.test.ts src/streaming.test.ts src/heal-integration.test.ts src/dag-planner.test.ts"
   },
   "dependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^11.10.0",
     "iii-sdk": "^0.17.0"
   },
   "devDependencies": {
-    "tsx": "^4.0.0",
     "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   }
 }

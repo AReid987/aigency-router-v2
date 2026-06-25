@@ -30,6 +30,11 @@ export type EventClass =
   | 'PEER_REVIEW_COMPLETED'
   | 'PEER_REVIEW_FAILED_CONSENSUS'
   | 'ORCHESTRATE_STARTED'
+  | 'QUOTA_ALERT'
+  | 'QUOTA_CHECK'
+  | 'QUOTA_EXHAUSTED'
+  | 'TIER_REFUSED'
+  | 'COST_ENFORCED'
 
 export interface TelemetryEvent {
   eventClass: EventClass

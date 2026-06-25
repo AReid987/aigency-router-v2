@@ -3,6 +3,9 @@ packages:
   - 'dashboard'
   - 'iii-sdk'
   - 'iii-engine'
+allowBuilds:
+  esbuild: set this to true or false
+  protobufjs: set this to true or false
 onlyBuiltDependencies:
   - better-sqlite3
   - esbuild

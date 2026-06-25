@@ -6,6 +6,7 @@
  */
 
 import { ProviderError, type Message, type ProviderConfig, type ProviderResponse, type StreamChunk } from './provider-client.ts'
+import type { ZeroCostCircuitBreaker } from './zero-cost/circuit_breaker.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -72,6 +73,8 @@ export class FailoverEngine {
     getKey: GetKeyFn,
     callProvider: CallProviderFn,
     getProviderConfig?: (providerId: string) => ProviderConfig | undefined,
+    /** Optional circuit-breaker for zero-cost enforcement */
+    readonly circuitBreaker?: ZeroCostCircuitBreaker,
   ) {
     this.getKey = getKey
     this.callProvider = callProvider
@@ -142,6 +145,15 @@ export class FailoverEngine {
       if (this.isInCooldown(providerId)) {
         failures.push({ provider: providerId, status: null, reason: 'in cooldown' })
         continue
+      }
+
+      // Check circuit-breaker (zero-cost enforcement) if configured
+      if (this.circuitBreaker) {
+        const cbResult = await this.circuitBreaker.check(providerId, providerId)
+        if (!cbResult.allowed) {
+          failures.push({ provider: providerId, status: null, reason: cbResult.reason ?? 'circuit-breaker refused' })
+          continue
+        }
       }
 
       // Fetch API key from vault

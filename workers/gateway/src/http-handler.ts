@@ -12,6 +12,9 @@ import { routeLlm, type RouteLlmInput, type RouteLlmDeps, type StreamingRouteRes
 import type { RouteResult } from './failover.ts'
 import { SimpleDAGPlanner, hasCycle, topologicalOrder } from './dag-planner.ts'
 import { logTelemetry, type EventClass } from '../../shared/telemetry.ts'
+import { QuotaMonitor } from './zero-cost/quota_monitor.ts'
+import { InMemoryUsageTracker } from './zero-cost/usage_tracker.ts'
+import type { IUsageTracker } from './zero-cost/usage_tracker.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -75,10 +78,39 @@ function writeJSONResponse(res: HttpResponse, body: OpenAICompletionResponse): v
   res.close()
 }
 
+// ── Module-level QuotaMonitor (lazy, gated on env var) ─────────────────
+
+let _quotaMonitor: QuotaMonitor | null = null
+
+function ensureQuotaMonitor(): QuotaMonitor | null {
+  if (process.env.GATEWAY_QUOTA_MONITORING !== 'true') return null
+  if (_quotaMonitor === null) {
+    const tracker = new InMemoryUsageTracker()
+    _quotaMonitor = new QuotaMonitor(tracker)
+    _quotaMonitor.start()
+  }
+  return _quotaMonitor
+}
+
 // ── HTTP Handler ───────────────────────────────────────────────────────
 
 export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvider?: (...args: any[]) => Promise<any> }) {
   return http(async (req: HttpRequest, res: HttpResponse) => {
+    // ── Admin route: GET /v1/admin/quota (gated) ──────────────────
+    if (req.method === 'GET' && (req.path === '/v1/admin/quota' || req.url === '/v1/admin/quota')) {
+      const monitor = ensureQuotaMonitor()
+      if (monitor === null) {
+        writeErrorResponse(res, 404, 'Not found')
+        return
+      }
+      const status = monitor.getStatus()
+      res.status(200)
+      res.headers({ 'content-type': 'application/json' })
+      res.stream.end(JSON.stringify(status))
+      res.close()
+      return
+    }
+
     const body = req.body as ChatCompletionsRequest | undefined
 
     logEvent({
