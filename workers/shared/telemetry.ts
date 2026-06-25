@@ -18,6 +18,14 @@ export type EventClass =
   | 'OFFLOAD_DECISION'
   | 'OFFLOAD_FORWARDED'
   | 'OFFLOAD_FALLBACK'
+  | 'GATE_EVALUATED'
+  | 'GATE_FAILED'
+  | 'GATE_HALLUCINATION_DETECTED'
+  | 'TASK_DISPATCHED'
+  | 'TASK_AGGREGATED'
+  | 'PEER_REVIEW_STARTED'
+  | 'PEER_REVIEW_COMPLETED'
+  | 'PEER_REVIEW_FAILED_CONSENSUS'
 
 export interface TelemetryEvent {
   eventClass: EventClass

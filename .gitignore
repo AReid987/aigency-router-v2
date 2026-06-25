@@ -54,3 +54,5 @@ lpt[1-9].*
 *.tmp
 pyproject.toml.*_
 uv.lock.*
+models/*.gguf
+models/

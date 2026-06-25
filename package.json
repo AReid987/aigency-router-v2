@@ -7,7 +7,8 @@
     "dev:engine": "iii --config iii.config.yaml",
     "dev:all": "concurrently \"pnpm dev:engine\" \"pnpm --filter './workers/*' dev\"",
     "test": "pnpm -r run test",
-    "build": "pnpm -r run build"
+    "build": "pnpm -r run build",
+    "fetch-bonsai": "bash scripts/fetch-bonsai.sh"
   },
   "devDependencies": {
     "@iii-dev/observability": "^0.17.0",
