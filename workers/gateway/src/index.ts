@@ -3,6 +3,7 @@ import { FailoverEngine, type RouteResult } from './failover.ts'
 import { callProvider, type Message, type StreamChunk, type ProviderResponse } from './provider-client.ts'
 import { logTelemetry, type EventClass } from '../../shared/telemetry.ts'
 import { createChatCompletionsHandler } from './http-handler.ts'
+import { callEngramHeal, HEAL_TIMEOUT_MS } from './heal-integration.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 
@@ -157,6 +158,12 @@ export interface RouteLlmDeps {
   getKey: (providerId: string) => Promise<string | null>
   createChannel?: () => Promise<{ writer: { sendMessage: (msg: string) => void; close: () => void }; reader: ChannelReader; writerRef: StreamChannelRef }>
   callProvider?: typeof callProvider
+  /** iii SDK instance — required when callEngramHeal is provided. */
+  iii?: ISdk
+  /** Optional: factory to create a callHeal fn injected into FailoverEngine.tryHeal. */
+  callEngramHeal?: (iii: ISdk, timeoutMs: number) => (jsonString: string, timeoutMs: number) => Promise<unknown>
+  /** Optional: provider config lookup for FailoverEngine. Defaults to provider-client registry. */
+  getProviderConfig?: (providerId: string) => { baseUrl: string; envKey: string } | undefined
 }
 
 /**
@@ -197,7 +204,27 @@ export async function routeLlm(
   }
 
   // 3. Non-streaming path: use FailoverEngine
-  const engine = new FailoverEngine(deps.getKey, deps.callProvider ?? callProvider)
+  const engine = new FailoverEngine(deps.getKey, deps.callProvider ?? callProvider, deps.getProviderConfig)
+  // Wire callEngramHeal into FailoverEngine.tryHeal so empty provider responses
+  // trigger a heal round-trip via engram::heal_json before falling through.
+  if (deps.callEngramHeal && deps.iii) {
+    engine.tryHeal = async (rawBody) => {
+      const callHeal = deps.callEngramHeal!(deps.iii!, HEAL_TIMEOUT_MS)
+      const healed = await callHeal(rawBody, HEAL_TIMEOUT_MS)
+      if (healed == null || typeof healed !== 'object') return null
+      const obj = healed as { repaired?: unknown }
+      if (typeof obj.repaired !== 'string') return null
+      return {
+        id: 'chatcmpl-healed',
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        content: obj.repaired,
+        choices: [{ index: 0, message: { role: 'assistant', content: obj.repaired }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      } as unknown as ProviderResponse
+    }
+  }
   const result = await engine.routeWithFailover(resolved.providers, model, messages, {
     stream,
     maxTokens,
@@ -271,6 +298,8 @@ export function createGatewayWorker(url: string = ENGINE_URL): ISdk {
         }
       },
       createChannel: async () => iii.createChannel(),
+      callEngramHeal,
+      iii,
     })
 
     // Fire-and-forget telemetry — emit routing events to SugarDB

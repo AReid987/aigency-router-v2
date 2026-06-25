@@ -61,10 +61,24 @@ export class FailoverEngine {
    * null to fall through. Default: noop (heal disabled).
    */
   tryHeal: (rawBody: string) => Promise<ProviderResponse | null> = async () => null
+  /**
+   * Optional: look up provider configuration. Defaults to the real
+   * provider-client registry so callers don't need to pass it.
+   */
+  getProviderConfig!: (providerId: string) => ProviderConfig | undefined
+  private _getProviderConfigProvided: boolean = false
 
-  constructor(getKey: GetKeyFn, callProvider: CallProviderFn) {
+  constructor(
+    getKey: GetKeyFn,
+    callProvider: CallProviderFn,
+    getProviderConfig?: (providerId: string) => ProviderConfig | undefined,
+  ) {
     this.getKey = getKey
     this.callProvider = callProvider
+    if (getProviderConfig !== undefined) {
+      this.getProviderConfig = getProviderConfig
+      this._getProviderConfigProvided = true
+    }
   }
 
   /**
@@ -109,6 +123,14 @@ export class FailoverEngine {
     options: RouteOptions = {},
   ): Promise<RouteResult> {
     const failures: RouteFailure['failures'] = []
+    // Resolve getProviderConfig once (avoids repeated dynamic import in hot path)
+    // Resolve getProviderConfig once (avoids repeated dynamic import in hot path)
+    const resolveConfig = this._getProviderConfigProvided
+      ? async (providerId: string) => this.getProviderConfig(providerId)
+      : async (providerId: string) => {
+          const { getProviderConfig: gpc } = await import('./provider-client.ts')
+          return gpc(providerId)
+        }
 
     for (const providerModel of providerArray) {
       // Parse "provider/model" format
@@ -130,8 +152,7 @@ export class FailoverEngine {
       }
 
       // Look up provider config
-      const { getProviderConfig } = await import('./provider-client.ts')
-      const config = getProviderConfig(providerId)
+      const config = await resolveConfig(providerId)
       if (config == null) {
         failures.push({ provider: providerId, status: null, reason: 'unknown provider' })
         continue
