@@ -34,7 +34,11 @@ export type EventClass =
   | 'QUOTA_CHECK'
   | 'QUOTA_EXHAUSTED'
   | 'TIER_REFUSED'
+  | 'TIER_CONFIG_REFRESHED'
   | 'COST_ENFORCED'
+  | 'TIER_PROBE_SUCCESS'
+  | 'TIER_PROBE_FAILED'
+  | 'TIER_PROBE_EXHAUSTED'
 
 export interface TelemetryEvent {
   eventClass: EventClass
