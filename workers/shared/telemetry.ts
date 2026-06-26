@@ -39,6 +39,8 @@ export type EventClass =
   | 'TIER_PROBE_SUCCESS'
   | 'TIER_PROBE_FAILED'
   | 'TIER_PROBE_EXHAUSTED'
+  | 'RATE_LIMIT_EXCEEDED'
+  | 'AUTH_REJECTED'
 
 export interface TelemetryEvent {
   eventClass: EventClass
