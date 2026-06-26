@@ -20,6 +20,11 @@ export interface RateLimitResult {
 
 export interface RateLimitMiddlewareOpts {
   keyExtractor?: (req: Record<string, any>) => string | undefined
+  /**
+   * Optional pre-built limiter override for testing.
+   * When provided, getActiveRateLimiter is NOT imported dynamically.
+   */
+  limiter?: { consume: (k: string) => RateLimitResult }
 }
 
 export interface AdminAuthMiddlewareOpts {
@@ -50,13 +55,19 @@ export function createRateLimitMiddleware(
   return (req: Record<string, any>): RateLimitResult => {
     const key = keyExtractor(req) ?? 'anonymous'
 
-    // Dynamic import to avoid hard dependency — rate-limiter.ts is created by S01.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { getActiveRateLimiter } = require('./rate-limiter.ts') as {
-      getActiveRateLimiter: () => { consume: (k: string) => RateLimitResult }
+    let limiter: { consume: (k: string) => RateLimitResult }
+
+    if (opts.limiter) {
+      limiter = opts.limiter
+    } else {
+      // Dynamic import to avoid hard dependency — rate-limiter.ts is created by S01.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { getActiveRateLimiter } = require('./rate-limiter.ts') as {
+        getActiveRateLimiter: () => { consume: (k: string) => RateLimitResult }
+      }
+      limiter = getActiveRateLimiter()
     }
 
-    const limiter = getActiveRateLimiter()
     return limiter.consume(key)
   }
 }

@@ -17,6 +17,7 @@ import { InMemoryUsageTracker, UsageTracker } from './zero-cost/usage_tracker.ts
 import type { IUsageTracker } from './zero-cost/usage_tracker.ts'
 import { TierClassifier } from './zero-cost/tier_classifier.ts'
 import { ZeroCostCircuitBreaker } from './zero-cost/circuit_breaker.ts'
+import { createRateLimitMiddleware, createAdminAuthMiddleware } from './middleware.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -122,6 +123,61 @@ function ensureZeroCostBreaker(iii: ISdk): { circuitBreaker: ZeroCostCircuitBrea
 
 export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvider?: (...args: any[]) => Promise<any> }) {
   return http(async (req: HttpRequest, res: HttpResponse) => {
+    // ── Admin Auth Middleware (gated) ────────────────────────────────
+    if (process.env.GATEWAY_ADMIN_AUTH === 'true' && (req.url ?? req.path ?? '').startsWith('/v1/admin/')) {
+      const adminToken = process.env.GATEWAY_ADMIN_TOKEN
+
+      // If admin auth is enabled but no token is configured, deny all
+      if (!adminToken) {
+        console.log('[auth] Admin auth enabled but GATEWAY_ADMIN_TOKEN is unset — denying all admin requests')
+        res.status(401)
+        res.headers({ 'www-authenticate': 'Admin-Token' })
+        const errorBody: OpenAIErrorResponse = { error: { message: 'Admin authentication required', type: 'auth_error' } }
+        res.stream.end(JSON.stringify(errorBody))
+        res.close()
+        return
+      }
+
+      const authMiddleware = createAdminAuthMiddleware({
+        token: adminToken,
+        telemetry: {
+          emit: (eventClass: string, data: any) => {
+            logTelemetry(
+              { trigger: (t: string, fn: string, p: unknown) => iii.trigger({ function_id: fn, payload: p as Record<string, unknown> }) },
+              { eventClass: eventClass as EventClass, sourceWorker: 'gateway', payload: data },
+            ).catch(() => {})
+          },
+        },
+      })
+
+      if (!authMiddleware(req)) {
+        res.status(401)
+        res.headers({ 'www-authenticate': 'Admin-Token' })
+        const errorBody: OpenAIErrorResponse = { error: { message: 'Admin authentication required', type: 'auth_error' } }
+        res.stream.end(JSON.stringify(errorBody))
+        res.close()
+        return
+      }
+    }
+
+    // ── Rate-Limit Middleware (gated) ─────────────────────────────────
+    if (process.env.GATEWAY_RATE_LIMITING === 'true' && (req.url ?? req.path ?? '').startsWith('/v1/chat/completions')) {
+      const rateLimitMiddleware = createRateLimitMiddleware()
+      const result = rateLimitMiddleware(req)
+
+      if (!result.allowed) {
+        res.status(429)
+        res.headers({
+          'retry-after': String(Math.ceil((result.retryAfterMs ?? 60000) / 1000)),
+          'x-ratelimit-remaining': '0',
+        })
+        const errorBody: OpenAIErrorResponse = { error: { message: 'Rate limit exceeded. Try again later.', type: 'rate_limit_error' } }
+        res.stream.end(JSON.stringify(errorBody))
+        res.close()
+        return
+      }
+    }
+
     // ── Admin route: GET /v1/admin/quota (gated) ──────────────────
     if (req.method === 'GET' && (req.path === '/v1/admin/quota' || req.url === '/v1/admin/quota')) {
       const monitor = ensureQuotaMonitor()
