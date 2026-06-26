@@ -18,6 +18,7 @@ import type { IUsageTracker } from './zero-cost/usage_tracker.ts'
 import { TierClassifier } from './zero-cost/tier_classifier.ts'
 import { ZeroCostCircuitBreaker } from './zero-cost/circuit_breaker.ts'
 import { createRateLimitMiddleware, createAdminAuthMiddleware } from './middleware.ts'
+import type { Logger } from './logger.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -54,10 +55,17 @@ interface OpenAICompletionResponse {
   }
 }
 
-// ── Structured Logging ─────────────────────────────────────────────────
+// ── Logger (module-level, set by createChatCompletionsHandler) ────────
+
+let _logger: Logger | null = null
 
 function logEvent(event: Record<string, unknown>): void {
-  console.log(JSON.stringify({ ...event, timestamp: new Date().toISOString() }))
+  const msg = (event.event as string) ?? 'http_handler'
+  if (_logger) {
+    _logger.info(msg, { ...event })
+  } else {
+    console.log(JSON.stringify({ ...event, timestamp: new Date().toISOString() }))
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -121,7 +129,14 @@ function ensureZeroCostBreaker(iii: ISdk): { circuitBreaker: ZeroCostCircuitBrea
 
 // ── HTTP Handler ───────────────────────────────────────────────────────
 
-export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvider?: (...args: any[]) => Promise<any> }) {
+export function createChatCompletionsHandler(
+  iii: ISdk,
+  overrides?: {
+    callProvider?: (...args: any[]) => Promise<any>
+    logger?: Logger
+  },
+) {
+  if (overrides?.logger) _logger = overrides.logger
   return http(async (req: HttpRequest, res: HttpResponse) => {
     // ── Admin Auth Middleware (gated) ────────────────────────────────
     if (process.env.GATEWAY_ADMIN_AUTH === 'true' && (req.url ?? req.path ?? '').startsWith('/v1/admin/')) {
@@ -129,7 +144,7 @@ export function createChatCompletionsHandler(iii: ISdk, overrides?: { callProvid
 
       // If admin auth is enabled but no token is configured, deny all
       if (!adminToken) {
-        console.log('[auth] Admin auth enabled but GATEWAY_ADMIN_TOKEN is unset — denying all admin requests')
+        logEvent({ event: 'admin_auth_unconfigured' })
         res.status(401)
         res.headers({ 'www-authenticate': 'Admin-Token' })
         const errorBody: OpenAIErrorResponse = { error: { message: 'Admin authentication required', type: 'auth_error' } }

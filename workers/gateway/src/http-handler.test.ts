@@ -592,13 +592,12 @@ describe('HTTP handler: error handling', () => {
 
       await new Promise(r => setTimeout(r, 200))
 
+      // http-handler.ts logEvent still writes via console.log when _logger is null.
+      // model_resolved is emitted by index.ts routeLlm via pino and is not captured here.
       const requestLog = logs.find(l => l.event === 'chat_completions_request')
       assert.ok(requestLog, 'should log chat_completions_request')
       assert.equal(requestLog.model, 'gpt-4')
       assert.equal(requestLog.stream, false)
-
-      const resolveLog = logs.find(l => l.event === 'model_resolved')
-      assert.ok(resolveLog, 'should log model_resolved')
 
       const successLog = logs.find(l => l.event === 'route_success')
       assert.ok(successLog, 'should log route_success')

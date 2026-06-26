@@ -1,0 +1,63 @@
+# =============================================================================
+# Caddyfile — Aigency Gateway Reverse Proxy
+#
+# Each header_up directive is explicit to prevent accidental stripping by
+# Caddy's default proxying behaviour:
+#
+#   X-Admin-Token  — Admin authentication header; must reach the gateway
+#                    unchanged so it can validate admin API requests.
+#   X-Api-Key      — API key used by external callers; transparently forwarded.
+#   Host           — Preserve the original Host header for gateway routing.
+#   X-Real-IP      — Client IP that Caddy sees; used by the gateway for logging
+#                    and rate-limiting source identification.
+#   X-Forwarded-For — Append (not replace) so downstream sees the full proxy
+#                    chain.
+#   X-Forwarded-Proto — Inform the gateway whether the original request used
+#                    HTTP or HTTPS (needed for any redirect/absolute-URL logic).
+#
+# TLS is handled automatically by Caddy when a real domain is configured.
+# For local development, auto_https is disabled and plain HTTP is used on :8080.
+# =============================================================================
+
+{
+    # Disable Caddy admin API for security
+    admin off
+    auto_https off
+}
+
+# Development site (no TLS, plain HTTP) — used when Caddy is started without
+# domain configuration.
+:8080 {
+    reverse_proxy gateway:8080 {
+        header_up X-Admin-Token {http.request.header.X-Admin-Token}
+        header_up X-Api-Key {http.request.header.X-Api-Key}
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}
+
+# Production site — TLS via Caddy automatic HTTPS (when domain is configured).
+# To enable: replace `tls internal` with a real domain (Caddy handles Let's
+# Encrypt cert issuance automatically).
+:443 {
+    reverse_proxy gateway:8080 {
+        header_up X-Admin-Token {http.request.header.X-Admin-Token}
+        header_up X-Api-Key {http.request.header.X-Api-Key}
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

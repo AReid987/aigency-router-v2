@@ -41,6 +41,8 @@ export type EventClass =
   | 'TIER_PROBE_EXHAUSTED'
   | 'RATE_LIMIT_EXCEEDED'
   | 'AUTH_REJECTED'
+  | 'HEALTH_CHECK_OK'
+  | 'HEALTH_CHECK_FAIL'
 
 export interface TelemetryEvent {
   eventClass: EventClass

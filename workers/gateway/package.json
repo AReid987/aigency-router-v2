@@ -10,7 +10,8 @@
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^11.10.0",
-    "iii-sdk": "^0.17.0"
+    "iii-sdk": "^0.17.0",
+    "pino": "^9.14.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
