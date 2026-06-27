@@ -20,7 +20,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "iii-sdk": "workspace:*",
+    "iii-sdk": "^0.17.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

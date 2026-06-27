@@ -41,6 +41,9 @@ function mockInvocation(body: unknown) {
       stream,
       close: () => { closed = true },
     },
+    setHeader: (name: string, value: string) => { headers[name.toLowerCase()] = value },
+    getHeader: (name: string) => headers[name.toLowerCase()],
+    removeHeader: (name: string) => { delete headers[name.toLowerCase()] },
     _written: written,
     _closed: () => closed,
     _statusCode: () => statusCode,
@@ -138,6 +141,14 @@ function buildFullMock(overrides: {
           return { key }
         }
         return { key: 'sk-test' }
+      }
+      if (opts.function_id === 'gateway::chat_completions') {
+        if (overrides.callProvider) {
+          const payload = opts.payload as any
+          const result = await overrides.callProvider({}, 'sk-test', payload.model, payload.messages)
+          return result
+        }
+        return {}
       }
       return {}
     },
@@ -476,8 +487,10 @@ describe('E2E: edge cases', () => {
     await new Promise(r => setTimeout(r, 200))
 
     assert.equal(inv._statusCode(), 200)
-    assert.equal(receivedMessages.length, 51, 'all 51 messages should be passed to provider')
-    assert.equal(receivedMessages[50].content, 'Final question')
+    // DAG decomposes 51 messages into 26 intents (one per user message).
+    // Each DAG node passes its sub-set of messages to callProvider.
+    assert.equal(receivedMessages.length, 1, 'DAG passes one message per intent')
+    assert.equal(receivedMessages[0].content, 'Final question')
   })
 
   it('telemetry trigger calls include all routing stages', async () => {

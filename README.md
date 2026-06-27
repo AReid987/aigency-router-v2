@@ -8,6 +8,8 @@ Refer to `workers/gateway/README.md` for development setup instructions.
 
 ## Deployment
 
+[![Test](https://github.com/AReid987/aigency-router-v2/actions/workflows/test.yml/badge.svg)](https://github.com/AReid987/aigency-router-v2/actions/workflows/test.yml)
+
 Run `docker compose up -d` from the repository root to start the full stack — sugar-db, vault, gateway, and Caddy reverse proxy. Verify the deployment with `curl -k https://127.0.0.1:8443/health` — a successful response returns `{"status":"ok","uptimeMs":...,"version":"..."}` with HTTP 200.
 
 Full configuration, secret management, monitoring, backup, and troubleshooting guidance is available in the operations manual.

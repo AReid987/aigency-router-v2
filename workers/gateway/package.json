@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "test": "node --test src/index.test.ts src/provider-client.test.ts src/failover.test.ts src/streaming.test.ts src/heal-integration.test.ts src/dag-planner.test.ts"
+    "test": "tsx --test src/index.test.ts src/provider-client.test.ts src/failover.test.ts src/streaming.test.ts src/heal-integration.test.ts src/dag-planner.test.ts src/http-handler.test.ts src/http-handler-zero-cost.test.ts src/rate-limiter.test.ts src/middleware.test.ts src/health.test.ts src/lifecycle.test.ts src/logger.test.ts src/parallel_scheduler.test.ts src/distributor.test.ts src/distributor.integration.test.ts src/peer_reviewer.test.ts"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",
