@@ -17,7 +17,7 @@ import { InMemoryUsageTracker, UsageTracker } from './zero-cost/usage_tracker.ts
 import type { IUsageTracker } from './zero-cost/usage_tracker.ts'
 import { TierClassifier } from './zero-cost/tier_classifier.ts'
 import { ZeroCostCircuitBreaker } from './zero-cost/circuit_breaker.ts'
-import { createRateLimitMiddleware, createAdminAuthMiddleware } from './middleware.ts'
+import { createRateLimitMiddleware, createAdminAuthMiddleware, getActiveCorsMiddleware, getActiveSizeLimitMiddleware } from './middleware.ts'
 import type { Logger } from './logger.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -138,6 +138,58 @@ export function createChatCompletionsHandler(
 ) {
   if (overrides?.logger) _logger = overrides.logger
   return http(async (req: HttpRequest, res: HttpResponse) => {
+    // ── CORS Middleware (gated) — position 0 ────────────────────────────
+    // Short-circuits on OPTIONS preflight so admin-auth and size-limit never
+    // see preflights. Adds CORS headers to actual responses when the
+    // request's Origin is in the allow-list.
+    const corsTelemetry = {
+      emit: (eventClass: string, data: any) => {
+        logTelemetry(
+          { trigger: (t: string, fn: string, p: unknown) => iii.trigger({ function_id: fn, payload: p as Record<string, unknown> }) },
+          { eventClass: eventClass as EventClass, sourceWorker: 'gateway', payload: data },
+        ).catch(() => {})
+      },
+    }
+    const corsMiddleware = getActiveCorsMiddleware(corsTelemetry)
+    const corsResult = corsMiddleware(req)
+    if (corsResult.handled) {
+      // Preflight: emit headers and respond
+      res.status(corsResult.status)
+      if (corsResult.headers) {
+        res.headers(corsResult.headers)
+      }
+      res.stream.end('')
+      res.close()
+      return
+    }
+    if (corsResult.headers) {
+      // Actual response: attach headers (deferred until response.write)
+      for (const [k, v] of Object.entries(corsResult.headers)) {
+        res.headers({ [k]: v })
+      }
+    }
+
+    // ── Size-Limit Middleware (gated) — position 1 ─────────────────────
+    // Rejects oversized bodies before they reach the model router. CORS
+    // preflight has no body, so it has already short-circuited above.
+    const sizeLimitTelemetry = {
+      emit: (eventClass: string, data: any) => {
+        logTelemetry(
+          { trigger: (t: string, fn: string, p: unknown) => iii.trigger({ function_id: fn, payload: p as Record<string, unknown> }) },
+          { eventClass: eventClass as EventClass, sourceWorker: 'gateway', payload: data },
+        ).catch(() => {})
+      },
+    }
+    const sizeLimitMiddleware = getActiveSizeLimitMiddleware(sizeLimitTelemetry)
+    const sizeResult = sizeLimitMiddleware(req)
+    if (sizeResult.rejected) {
+      res.status(sizeResult.status)
+      res.headers({ 'content-type': 'application/json' })
+      res.stream.end(sizeResult.body ?? '{"error":"request_too_large"}')
+      res.close()
+      return
+    }
+
     // ── Admin Auth Middleware (gated) ────────────────────────────────
     if (process.env.GATEWAY_ADMIN_AUTH === 'true' && (req.url ?? req.path ?? '').startsWith('/v1/admin/')) {
       const adminToken = process.env.GATEWAY_ADMIN_TOKEN

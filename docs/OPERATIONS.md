@@ -30,6 +30,23 @@ Required ports that must be available on the host:
 
 The gateway is configured entirely through environment variables. All GATEWAY\_\* variables are read at startup. The table below documents every supported variable.
 
+### CORS
+
+| Name | Type | Default | Required For | Security Note |
+|------|------|---------|-------------|---------------|
+| GATEWAY_CORS | boolean | `"false"` | Opt-in CORS middleware on `/v1/*` paths | Enable to allow browser-based consumers to call the gateway cross-origin. When off, no CORS headers are added. |
+| GATEWAY_CORS_ALLOWED_ORIGINS | CSV | (none) | Comma-separated list of allowed Origin values | If `GATEWAY_CORS=true` but this is unset, the middleware is a no-op. Disallowed origins receive a 204 preflight with no CORS headers — the browser blocks the actual request client-side. |
+| GATEWAY_CORS_ALLOWED_METHODS | CSV | `"GET,POST"` | Comma-separated list of allowed methods | |
+| GATEWAY_CORS_ALLOWED_HEADERS | CSV | `"Content-Type,Authorization,x-api-key,x-admin-token"` | Comma-separated list of allowed request headers | |
+| GATEWAY_CORS_MAX_AGE | integer (seconds) | `"86400"` | Cache duration for the preflight response | |
+| GATEWAY_CORS_CREDENTIALS | boolean | `"false"` | Whether to allow cookies / Authorization headers cross-origin | Set to `true` only with `https://` allow-listed origins. Never use with `"*"` (the gateway does not support wildcard origins). |
+
+### Request Size Limit
+
+| Name | Type | Default | Required For | Security Note |
+|------|------|---------|-------------|---------------|
+| GATEWAY_MAX_REQUEST_BYTES | integer (bytes) | (unset → noop) | Reject requests whose body exceeds this many bytes | When unset, the middleware is a no-op. A 100 MiB limit is a reasonable starting point for browser clients; tighten to your largest legitimate body. The limit is enforced both on `Content-Length`-declared bodies and on streaming bodies via `req.on('data')` accumulation. The 413 response body is `{"error":"request_too_large","maxBytes":N}`. |
+
 ### Rate Limiting
 
 | Name | Type | Default | Required For | Security Note |
@@ -123,6 +140,20 @@ This produces a 64-character hex string. Set it as the `GATEWAY_ADMIN_TOKEN` env
 2. Deploy the new token alongside the old one by setting **both** in the environment for 24 hours (the gateway reads `GATEWAY_ADMIN_TOKEN`; update the env var via rolling restart).
 3. After 24 hours, remove the old token reference and confirm all clients have migrated.
 4. Update the token in your secret store.
+
+### Provider API Key Rotation (via `tools/rotate-key.ts`)
+
+The `rotate-key` tool rolls provider API keys (e.g. OpenAI, Anthropic) with a 24-hour overlap window so the gateway can drain in-flight requests before the old key is removed. The tool reads `~/.gsd/agent/auth.json` (or `GATEWAY_AUTH_PATH` override) and writes a versioned key file with `status: active` and `deprecatedAt` timestamps.
+
+```bash
+# Add a new key — old key is marked deprecated, gateway is signaled
+pnpm --filter gateway rotate-key openai --new-key sk-new-...
+
+# 24+ hours later: prune deprecated keys older than the grace window
+pnpm --filter gateway rotate-key openai --prune
+```
+
+The gateway hot-reloads active keys on `SIGUSR1` (Unix) when the tool detects a `GATEWAY_PID_PATH` env var or `--gateway-pid <pid>` flag. On Windows the tool falls back to a documented restart path. Structured JSON log lines (`KEY_ROTATED`, `KEY_PRUNED`, `KEY_DEPRECATED`) feed the same Pino telemetry stream as other events.
 
 ### Storage Backends
 
@@ -316,18 +347,28 @@ curl -X POST https://events.pagerduty.com/v2/enqueue \
 
 The only stateful component in the stack is the sugar-db SQLite database, which stores telemetry events and usage tracking data.
 
-### Backup
+### Backup (via `tools/backup.ts`)
 
-Run this command to create a backup of the usage database:
+The `backup` script in `tools/backup.ts` wraps `sqlite3 .backup` with idempotent timestamped destinations. It runs as a separate docker-compose service (`backup`) that wakes up daily and writes a timestamped `.db` file. The script is idempotent: a second invocation on the same day skips the backup (BACKUP_SKIPPED log, exit 0).
 
 ```bash
-docker compose exec sugar-db sqlite3 /data/usage.db ".backup /backups/usage-$(date +%F).db"
+# Run the backup manually
+pnpm --filter gateway backup:run
+
+# Custom paths
+pnpm --filter gateway backup:run -- --db /var/lib/aigency/usage.db --dir /var/backups
+
+# Dry-run (logs the planned destination without writing)
+pnpm --filter gateway backup:run -- --dry-run
 ```
 
-For automated backups, add a cron job:
+The script reads `GATEWAY_ZERO_COST_DB_PATH` (default `./data/usage.db`) and `GATEWAY_BACKUP_DIR` (default `./backups`). It emits structured JSON log lines (`BACKUP_OK`, `BACKUP_SKIPPED`, `BACKUP_FAILED`) that compose with the existing Pino telemetry stream.
+
+The docker-compose stack includes a `backup` service that runs the script on a 24-hour sleep loop. To verify it's running:
 
 ```bash
-0 2 * * * cd /opt/aigency && docker compose exec sugar-db sqlite3 /data/usage.db ".backup /backups/usage-$(date +\%F).db"
+docker compose ps backup
+docker compose logs --tail=20 backup
 ```
 
 ### Restore

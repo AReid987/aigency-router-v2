@@ -13,6 +13,7 @@ volumes:
   sugar-db-data:
   caddy_data:
   caddy_config:
+  backup-data:
 
 services:
   # --------------------------------------------------------------------------
@@ -69,6 +70,34 @@ services:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Backup — daily sqlite .backup of usage.db
+  # --------------------------------------------------------------------------
+  backup:
+    image: node:22-alpine
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        apk add --no-cache sqlite >/dev/null 2>&1 || true
+        while true; do
+          echo "[backup] running daily backup at $(date -Iseconds)"
+          tsx /app/tools/backup.ts
+          echo "[backup] sleeping 24h"
+          sleep 86400
+        done
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - backup-data:/backups
+    environment:
+      GATEWAY_ZERO_COST_DB_PATH: /app/data/usage.db
+      GATEWAY_BACKUP_DIR: /backups
     depends_on:
       - gateway
     restart: unless-stopped
