@@ -1,12 +1,13 @@
 # =============================================================================
-# Docker Compose for Aigency Gateway stack
+# Docker Compose for Aigency Router Stack
 #
 # Services:
-#   sugar-db  — SugarDB key-value/document store
-#   vault     — Admin token / API key store (placeholder: uses node:22-alpine
-#               until a proper Dockerfile is authored — see OPERATIONS.md)
-#   gateway   — @aigency/gateway (built from ../Dockerfile)
-#   caddy     — Reverse proxy with header propagation
+#   iii-engine — WebSocket orchestration hub (control plane)
+#   sugar-db   — SugarDB key-value/document store
+#   vault      — Encrypted API key management (iii worker)
+#   gateway    — @aigency/gateway HTTP API
+#   caddy      — Reverse proxy
+#   backup     — Daily SQLite backup sidecar
 # =============================================================================
 
 volumes:
@@ -14,8 +15,30 @@ volumes:
   caddy_data:
   caddy_config:
   backup-data:
+  iii-state:
+  iii-streams:
+  vault-data:
 
 services:
+  # --------------------------------------------------------------------------
+  # iii-engine — orchestration control plane (WebSocket on :49134)
+  # --------------------------------------------------------------------------
+  iii-engine:
+    image: node:22-alpine
+    command: ["node", "--import", "tsx", "iii-engine/src/engine.ts"]
+    working_dir: /app
+    ports:
+      - "49134:49134"
+      - "3111:3111"
+    volumes:
+      - ./:/app:ro
+      - iii-state:/app/data/state
+      - iii-streams:/app/data/streams
+      - /app/node_modules
+    environment:
+      NODE_ENV: production
+    restart: unless-stopped
+
   # --------------------------------------------------------------------------
   # SugarDB — backend data store
   # --------------------------------------------------------------------------
@@ -28,44 +51,67 @@ services:
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
-  # Vault — admin token / API key management (placeholder)
+  # Vault — encrypted API key management (iii worker)
   # --------------------------------------------------------------------------
   vault:
     image: node:22-alpine
-    command: ["node", "-e", "setInterval(()=>{},1<<30)"]  # placeholder: keep-alive
-    ports:
-      - "8082:8082"
+    command: ["node", "--import", "tsx", "workers/vault/src/index.ts"]
+    working_dir: /app
+    depends_on:
+      - iii-engine
+    volumes:
+      - ./:/app:ro
+      - vault-data:/data
+      - /app/node_modules
     environment:
-      GATEWAY_VAULT_URL: http://sugar-db:8081
+      III_URL: ws://iii-engine:49134
+      VAULT_MASTER_KEY: ${VAULT_MASTER_KEY}
+      VAULT_DB_PATH: /data/vault.db
+      NODE_ENV: production
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
-  # Gateway — core API server (internal, not exposed to host)
+  # Gateway — core HTTP API server
   # --------------------------------------------------------------------------
   gateway:
-    build: .
-    expose:
-      - "8080"
+    image: node:22-alpine
+    command: ["node", "--import", "tsx", "workers/gateway/src/index.ts"]
+    working_dir: /app
+    ports:
+      - "8080:8080"
     depends_on:
+      - iii-engine
       - sugar-db
       - vault
+    volumes:
+      - ./:/app:ro
+      - /app/node_modules
     environment:
+      III_URL: ws://iii-engine:49134
       GATEWAY_SUGAR_DB_URL: http://sugar-db:8081
-      GATEWAY_VAULT_URL: http://vault:8082
-      GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN}
+      GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN:-changeme}
       GATEWAY_RATE_LIMITING: ${GATEWAY_RATE_LIMITING:-false}
       GATEWAY_ADMIN_AUTH: ${GATEWAY_ADMIN_AUTH:-false}
+      GATEWAY_HEALTH_PORT: ${GATEWAY_HEALTH_PORT:-9090}
+      GATEWAY_COST_REPORTING: ${GATEWAY_COST_REPORTING:-false}
+      GATEWAY_DASHBOARD: ${GATEWAY_DASHBOARD:-false}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
-  # Caddy — HTTPS reverse proxy with auto TLS and header propagation
+  # Caddy — reverse proxy
   # --------------------------------------------------------------------------
   caddy:
     image: caddy:2-alpine
     ports:
       - "8443:8443"
-      - "8080:8080"
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -75,7 +121,7 @@ services:
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
-  # Backup — daily sqlite .backup of usage.db
+  # Backup — daily SQLite backup sidecar
   # --------------------------------------------------------------------------
   backup:
     image: node:22-alpine
@@ -86,18 +132,19 @@ services:
         set -eu
         apk add --no-cache sqlite >/dev/null 2>&1 || true
         while true; do
-          echo "[backup] running daily backup at $(date -Iseconds)"
-          tsx /app/tools/backup.ts
+          echo "[backup] running daily backup at $$(date -Iseconds)"
+          if [ -f /app/data/usage.db ]; then
+            sqlite3 /app/data/usage.db ".backup /backups/usage-$$(date +%Y%m%d).db"
+          else
+            echo "[backup] no usage.db found, skipping"
+          fi
           echo "[backup] sleeping 24h"
           sleep 86400
         done
     working_dir: /app
     volumes:
-      - ./:/app
+      - ./data:/app/data:ro
       - backup-data:/backups
-    environment:
-      GATEWAY_ZERO_COST_DB_PATH: /app/data/usage.db
-      GATEWAY_BACKUP_DIR: /backups
     depends_on:
       - gateway
     restart: unless-stopped

@@ -29,7 +29,7 @@ COPY workers/vault/package.json        ./workers/vault/package.json
 COPY workers/sugar-db/package.json     ./workers/sugar-db/package.json
 COPY dashboard/package.json            ./dashboard/package.json
 COPY iii-sdk/package.json              ./iii-sdk/package.json
-COPY iii-engine/package.json          ./iii-engine/package.json
+COPY iii-engine/package.json           ./iii-engine/package.json
 
 # ----- Install dependencies (frozen lockfile) ------------------------------
 RUN pnpm install --frozen-lockfile
@@ -41,8 +41,10 @@ COPY iii-sdk ./iii-sdk
 COPY iii-engine ./iii-engine
 COPY dashboard ./dashboard
 
+# ----- Build iii-sdk first (other packages depend on it) -------------------
+RUN pnpm --filter iii-sdk run build
+
 # ----- Build the gateway package -------------------------------------------
-# Build output goes to workers/gateway/dist (per tsconfig outDir)
 RUN pnpm --filter @aigency/gateway exec tsc --project tsconfig.json --allowImportingTsExtensions --outDir dist --rootDir . --declaration --declarationMap --sourceMap --skipLibCheck
 
 # ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ RUN pnpm --filter @aigency/gateway exec tsc --project tsconfig.json --allowImpor
 FROM node:22-alpine AS runtime
 
 # Install dumb-init for proper signal handling (SIGTERM graceful shutdown)
-RUN apk add --no-cache dumb-init
+RUN apk add --no-cache dumb-init curl
 
 WORKDIR /app
 
@@ -64,7 +66,8 @@ COPY --from=builder /app/package.json            ./
 
 # Shared workspace types referenced at runtime by the compiled output
 COPY --from=builder /app/workers/shared          ./workers/shared
-COPY --from=builder /app/iii-sdk                 ./iii-sdk
+COPY --from=builder /app/iii-sdk/dist            ./iii-sdk/dist
+COPY --from=builder /app/iii-sdk/package.json    ./iii-sdk/package.json
 
 # Run as non-root user
 USER node
@@ -72,10 +75,11 @@ USER node
 ENV NODE_ENV=production
 
 EXPOSE 8080
+EXPOSE 9090
 
-# Health check against the /health endpoint (S01 establishes this contract)
+# Health check against the /health endpoint on the gateway port
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"] || exit 1
+  CMD ["curl", "-sf", "http://127.0.0.1:8080/health"] || exit 1
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "workers/gateway/dist/index.js"]

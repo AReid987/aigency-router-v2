@@ -56,3 +56,4 @@ pyproject.toml.*_
 uv.lock.*
 models/*.gguf
 models/
+.gitnexus
