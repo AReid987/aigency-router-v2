@@ -89,7 +89,7 @@ export function createRateLimitMiddleware(
       )
     })
 
-  return (req: Record<string, any>): RateLimitResult => {
+  return async (req: Record<string, any>): Promise<RateLimitResult> => {
     const key = keyExtractor(req) ?? 'anonymous'
 
     let limiter: { consume: (k: string) => RateLimitResult }
@@ -99,7 +99,7 @@ export function createRateLimitMiddleware(
     } else {
       // Dynamic import to avoid hard dependency — rate-limiter.ts is created by S01.
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { getActiveRateLimiter } = require('./rate-limiter.ts') as {
+      const { getActiveRateLimiter } = await import('./rate-limiter.ts') as {
         getActiveRateLimiter: () => { consume: (k: string) => RateLimitResult }
       }
       limiter = getActiveRateLimiter()

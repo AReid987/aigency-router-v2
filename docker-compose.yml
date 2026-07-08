@@ -3,7 +3,7 @@
 #
 # Services:
 #   iii-engine — WebSocket orchestration hub (control plane)
-#   sugar-db   — SugarDB key-value/document store
+#   sugar-db   — iii-sdk worker for telemetry and event logging
 #   vault      — Encrypted API key management (iii worker)
 #   gateway    — @aigency/gateway HTTP API
 #   caddy      — Reverse proxy
@@ -21,17 +21,19 @@ volumes:
 
 services:
   # --------------------------------------------------------------------------
-  # iii-engine — orchestration control plane (WebSocket on :49134)
+  # iii-engine — orchestration control plane (WebSocket+HTTP on :3000)
   # --------------------------------------------------------------------------
   iii-engine:
-    image: node:22-alpine
+    build:
+      context: .
+      dockerfile: iii-engine/Dockerfile
     command: ["node", "--import", "tsx", "iii-engine/src/engine.ts"]
     working_dir: /app
     ports:
-      - "49134:49134"
+      - "3001:3000"
       - "3111:3111"
     volumes:
-      - ./:/app:ro
+      - ./:/app
       - iii-state:/app/data/state
       - iii-streams:/app/data/streams
       - /app/node_modules
@@ -43,18 +45,33 @@ services:
   # SugarDB — backend data store
   # --------------------------------------------------------------------------
   sugar-db:
-    image: sugardb/sugardb:latest
+    build:
+      context: .
+      dockerfile: workers/sugar-db/Dockerfile
+    depends_on:
+      - iii-engine
+    working_dir: /app
     ports:
-      - "8081:8081"
+      - "8081"
     volumes:
-      - sugar-db-data:/data
+      - ./:/app
+      - sugar-db-data:/app/data
+      - /app/node_modules
+    environment:
+      III_URL: ws://iii-engine:3000
+      SUGAR_DB_PATH: /app/data/sugar.db
+      SSE_PORT: "3115"
+      HEALTH_PORT: "8081"
+      NODE_ENV: production
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
   # Vault — encrypted API key management (iii worker)
   # --------------------------------------------------------------------------
   vault:
-    image: node:22-alpine
+    build:
+      context: .
+      dockerfile: workers/vault/Dockerfile
     command: ["node", "--import", "tsx", "workers/vault/src/index.ts"]
     working_dir: /app
     depends_on:
@@ -64,9 +81,28 @@ services:
       - vault-data:/data
       - /app/node_modules
     environment:
-      III_URL: ws://iii-engine:49134
+      III_URL: ws://iii-engine:3000
       VAULT_MASTER_KEY: ${VAULT_MASTER_KEY}
       VAULT_DB_PATH: /data/vault.db
+      NODE_ENV: production
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Translator — model name to provider route resolution (iii worker)
+  # --------------------------------------------------------------------------
+  translator:
+    build:
+      context: .
+      dockerfile: workers/translator/Dockerfile
+    command: ["node", "--import", "tsx", "workers/translator/src/index.ts"]
+    working_dir: /app
+    depends_on:
+      - iii-engine
+    volumes:
+      - ./:/app:ro
+      - /app/node_modules
+    environment:
+      III_URL: ws://iii-engine:3000
       NODE_ENV: production
     restart: unless-stopped
 
@@ -74,7 +110,9 @@ services:
   # Gateway — core HTTP API server
   # --------------------------------------------------------------------------
   gateway:
-    image: node:22-alpine
+    build:
+      context: .
+      dockerfile: workers/gateway/Dockerfile
     command: ["node", "--import", "tsx", "workers/gateway/src/index.ts"]
     working_dir: /app
     ports:
@@ -87,10 +125,11 @@ services:
       - ./:/app:ro
       - /app/node_modules
     environment:
-      III_URL: ws://iii-engine:49134
+      III_URL: ws://iii-engine:3000
       GATEWAY_SUGAR_DB_URL: http://sugar-db:8081
+      GATEWAY_VAULT_URL: http://vault:8082
       GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN:-changeme}
-      GATEWAY_RATE_LIMITING: ${GATEWAY_RATE_LIMITING:-false}
+      GATEWAY_RATE_LIMITING: false
       GATEWAY_ADMIN_AUTH: ${GATEWAY_ADMIN_AUTH:-false}
       GATEWAY_HEALTH_PORT: ${GATEWAY_HEALTH_PORT:-9090}
       GATEWAY_COST_REPORTING: ${GATEWAY_COST_REPORTING:-false}
@@ -98,7 +137,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NODE_ENV: production
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:9090/health"]
       interval: 15s
       timeout: 5s
       start_period: 10s

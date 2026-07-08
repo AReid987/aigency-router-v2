@@ -1,3 +1,4 @@
+import http from 'node:http'
 import { registerWorker, type ISdk } from 'iii-sdk'
 import { SugarDB, type LogEventInput, type QueryEventsInput } from './db.ts'
 import { createSseServer, type EventBroadcaster } from './sse.ts'
@@ -5,6 +6,20 @@ import { createSseServer, type EventBroadcaster } from './sse.ts'
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 const DB_PATH = process.env.SUGAR_DB_PATH ?? 'data/sugar.db'
 const SSE_PORT = parseInt(process.env.SSE_PORT ?? '3115', 10)
+const HEALTH_PORT = parseInt(process.env.HEALTH_PORT ?? '8081', 10)
+
+// Minimal HTTP health endpoint for Docker readiness probes
+http.createServer((req, res) => {
+  if (req.url === '/' || req.url === '/health') {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ status: 'ok' }))
+  } else {
+    res.writeHead(404)
+    res.end()
+  }
+}).listen(HEALTH_PORT, () => {
+  console.log(`[sugar-db] health endpoint listening on :${HEALTH_PORT}`)
+})
 
 // ── SugarDB Worker ─────────────────────────────────────────────────────
 
