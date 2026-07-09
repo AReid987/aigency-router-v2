@@ -53,6 +53,7 @@ services:
     working_dir: /app
     ports:
       - "8081"
+      - "3115:3115"
     volumes:
       - ./:/app
       - sugar-db-data:/app/data

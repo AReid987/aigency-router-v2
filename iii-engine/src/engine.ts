@@ -97,6 +97,8 @@ export class Engine {
   private readonly workers = new Map<string, WorkerInfo>();
   /** correlationId → pending call */
   private readonly pending = new Map<string, PendingCall>();
+  /** invocationId → { send: calling worker's send function } for worker-to-worker forwarding */
+  private readonly workerInvocations = new Map<string, { send: (m: Record<string, unknown>) => void }>();
   /** channelId → { readWs, writeWs, readerCount, writerCount } */
   private readonly channels = new Map<string, ChannelState>();
 
@@ -328,9 +330,24 @@ export class Engine {
       send({ type: 'invocationresult', invocation_id, error: { code: 'NOT_FOUND', message: `unknown engine function: ${fnId}` } });
       return;
     }
-    // Otherwise, this is a worker calling a non-engine function — should be sent via public API, not direct ws
+    // Look up which worker registered this function and forward the invocation
     if (invocation_id) {
-      send({ type: 'invocationresult', invocation_id, error: { code: 'BAD_REQUEST', message: 'workers cannot call non-engine functions directly' } });
+      for (const [targetId, targetWorker] of this.workers) {
+        if (targetWorker.id !== workerId && targetWorker.functions.has(fnId)) {
+          // Store the calling worker's send function so we can forward the result back
+          this.workerInvocations.set(invocation_id, { send });
+          // Forward the invocation to the target worker
+          targetWorker.ws.send(JSON.stringify({
+            type: 'invokefunction',
+            invocation_id,
+            function_id: fnId,
+            data,
+          }));
+          return;
+        }
+      }
+      // No worker found that registered this function
+      send({ type: 'invocationresult', invocation_id, error: { code: 'NOT_FOUND', message: `no worker registered function: ${fnId}` } });
     }
   }
 
@@ -394,6 +411,17 @@ export class Engine {
 
   private handleInvocationResult(msg: { invocation_id?: string; result?: unknown; error?: unknown }): void {
     const id = msg.invocation_id as string;
+    // Check if this is a worker-to-worker forwarded invocation
+    const workerCall = this.workerInvocations.get(id);
+    if (workerCall) {
+      this.workerInvocations.delete(id);
+      if (msg.error !== undefined) {
+        workerCall.send({ type: 'invocationresult', invocation_id: id, error: msg.error });
+      } else {
+        workerCall.send({ type: 'invocationresult', invocation_id: id, result: msg.result });
+      }
+      return;
+    }
     const pending = this.pending.get(id);
     if (!pending) {
       this.log({ msg: 'unexpected-invocation-result', id });
