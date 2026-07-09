@@ -45,6 +45,26 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     baseUrl: 'https://api.together.xyz/v1/chat/completions',
     envKey: 'TOGETHER_API_KEY',
   },
+  openrouter: {
+    baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
+    envKey: 'PROVIDER_KEY_OPENROUTER',
+  },
+  freemodel: {
+    baseUrl: 'https://api.freemodel.dev/v1/chat/completions',
+    envKey: 'PROVIDER_KEY_FREEMODEL',
+  },
+  mistral: {
+    baseUrl: 'https://api.mistral.ai/v1/chat/completions',
+    envKey: 'PROVIDER_KEY_MISTRAL',
+  },
+  'command-code': {
+    baseUrl: 'https://api.anthropic.com/v1/chat/completions',
+    envKey: 'PROVIDER_KEY_COMMAND_CODE',
+  },
+  llm7: {
+    baseUrl: 'https://llm7.io/api/v1/chat/completions',
+    envKey: 'PROVIDER_KEY_LLM7',
+  },
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────

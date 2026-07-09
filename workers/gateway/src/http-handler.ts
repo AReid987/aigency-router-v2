@@ -442,12 +442,13 @@ export function createChatCompletionsHandler(
       // Simple model resolution — maps model names to provider routes
       // In production, this would call translator::resolve via the engine
       const CANONICAL_MAP: Record<string, string[]> = {
-        'mistral-large-latest': ['groq/llama-3.3-70b-versatile'],
-        'mistral-small-latest': ['groq/llama3-8b-8192'],
+        'openrouter/free': ['openrouter/free'],
+        'mistral-large-latest': ['openrouter/mistralai/mistral-large-2411', 'groq/llama-3.3-70b-versatile'],
+        'mistral-small-latest': ['openrouter/mistralai/mistral-small-2409', 'groq/llama3-8b-8192'],
         'llama3-70b': ['groq/llama-3.3-70b-versatile'],
         'llama3': ['groq/llama3-8b-8192', 'cerebras/llama3.1-8b'],
-        'deepseek-v4-flash': ['groq/llama3-8b-8192'],
-        'deepseek-v4-pro': ['groq/llama-3.3-70b-versatile'],
+        'deepseek-v4-flash': ['openrouter/deepseek/deepseek-chat', 'groq/llama3-8b-8192'],
+        'deepseek-v4-pro': ['openrouter/deepseek/deepseek-r1', 'groq/llama-3.3-70b-versatile'],
       }
       const providers = CANONICAL_MAP[model] || [`openrouter/${model}`]
       return { model, providers, resolved: providers.length > 0 }
