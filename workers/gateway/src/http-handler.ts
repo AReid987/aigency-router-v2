@@ -438,18 +438,29 @@ export function createChatCompletionsHandler(
     }
 
     // ── Build deps for routeLlm ─────────────────────────────────────
+    const resolveModel = (model: string): { model: string; providers: string[]; resolved: boolean } => {
+      // Simple model resolution — maps model names to provider routes
+      // In production, this would call translator::resolve via the engine
+      const CANONICAL_MAP: Record<string, string[]> = {
+        'mistral-large-latest': ['groq/llama-3.3-70b-versatile'],
+        'mistral-small-latest': ['groq/llama3-8b-8192'],
+        'llama3-70b': ['groq/llama-3.3-70b-versatile'],
+        'llama3': ['groq/llama3-8b-8192', 'cerebras/llama3.1-8b'],
+        'deepseek-v4-flash': ['groq/llama3-8b-8192'],
+        'deepseek-v4-pro': ['groq/llama-3.3-70b-versatile'],
+      }
+      const providers = CANONICAL_MAP[model] || [`openrouter/${model}`]
+      return { model, providers, resolved: providers.length > 0 }
+    }
+
     const deps: RouteLlmDeps = {
-      resolveModel: async (model: string) => {
-        const resp = await iii.trigger({ function_id: 'translator::resolve', payload: { model } })
-        return resp as { model: string; providers: string[]; resolved: boolean }
-      },
+      resolveModel: async (model: string) => resolveModel(model),
       getKey: async (providerId: string) => {
-        try {
-          const resp = await iii.trigger({ function_id: 'vault::retrieve', payload: { providerId } })
-          return (resp as { key?: string }).key ?? null
-        } catch {
-          return null
-        }
+        // Read API key from env var PROVIDER_KEY_<UPPER_CASE_PROVIDER_ID>
+        // e.g. PROVIDER_KEY_OPENROUTER, PROVIDER_KEY_MISTRAL, PROVIDER_KEY_GROQ
+        // Falls back to direct provider name lookup for OpenRouter-style compound IDs
+        const envVar = `PROVIDER_KEY_${providerId.split('/')[0].toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`
+        return process.env[envVar] ?? null
       },
       createChannel: async () => iii.createChannel(),
       callProvider: overrides?.callProvider,
@@ -461,7 +472,7 @@ export function createChatCompletionsHandler(
       const zc = ensureZeroCostBreaker(iii)
       if (zc) {
         _zcUsageRef = zc.usageTracker
-        const resolved = await iii.trigger({ function_id: 'translator::resolve', payload: { model: body.model } })
+        const resolved = resolveModel(body.model as string)
         const resolvedProviders = ((resolved as { providers?: string[] }).providers ?? [])
 
         const filtered: string[] = []
