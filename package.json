@@ -5,7 +5,7 @@
   "description": "Aigency OS — autonomous agent swarm orchestration on iii primitives",
   "scripts": {
     "dev:engine": "iii --config iii.config.yaml",
-    "dev:all": "concurrently \"pnpm dev:engine\" \"pnpm --filter './workers/*' dev\"",
+    "dev:all": "concurrently \"pnpm dev:engine\" \"pnpm --filter './workers/gateway' --filter './workers/selector' --filter './workers/translator' --filter './workers/vault' --filter './workers/engram' dev\"",
     "test": "pnpm -r run test",
     "build": "pnpm -r run build"
   },
