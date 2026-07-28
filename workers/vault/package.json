@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "iii-sdk": "^0.17.0",
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^13.0.1"
   },
   "devDependencies": {
     "tsx": "^4.0.0",
