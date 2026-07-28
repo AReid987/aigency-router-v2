@@ -70,16 +70,27 @@ function mockInvocation(body: unknown) {
 }
 
 function mockReader(messages: string[] = ['chunk-1']) {
-  const stream = new EventEmitter()
+  // Models the real SDK ChannelReader: `stream` is a Readable that must be
+  // resumed before messages flow.
+  const stream = new EventEmitter() as EventEmitter & {
+    resume: () => void
+    pause: () => void
+  }
   let closed = false
+  let delivered = false
   const callbacks: ((msg: string) => void)[] = []
 
   const deliver = () => {
+    if (delivered) return
+    delivered = true
     for (const msg of messages) {
       for (const cb of callbacks) cb(msg)
     }
     setTimeout(() => stream.emit('end'), 5)
   }
+
+  stream.resume = () => { setTimeout(deliver, 2) }
+  stream.pause = () => {}
 
   return {
     onMessage(cb: (msg: string) => void) {

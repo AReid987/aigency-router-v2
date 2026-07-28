@@ -52,16 +52,27 @@ function mockInvocation(body: unknown) {
 }
 
 function mockReader(messages: string[] = []) {
-  const stream = new EventEmitter()
+  // Models the real SDK ChannelReader: `stream` is a Readable that must be
+  // resumed before messages flow.
+  const stream = new EventEmitter() as EventEmitter & {
+    resume: () => void
+    pause: () => void
+  }
   let closed = false
+  let delivered = false
   const callbacks: ((msg: string) => void)[] = []
 
   const deliver = () => {
+    if (delivered) return
+    delivered = true
     for (const msg of messages) {
       for (const cb of callbacks) cb(msg)
     }
     setTimeout(() => stream.emit('end'), 5)
   }
+
+  stream.resume = () => { setTimeout(deliver, 2) }
+  stream.pause = () => {}
 
   return {
     onMessage(cb: (msg: string) => void) {
@@ -142,13 +153,13 @@ function buildFullMock(overrides: {
         }
         return { key: 'sk-test' }
       }
+      // NOTE: gateway::chat_completions is deliberately NOT handled here.
+      // The engine refuses to route a function back to the worker that
+      // registered it, so the gateway can never self-invoke. DAG sub-tasks
+      // run in-process via routeLlm; mocking a self-invocation here would
+      // hide that failure (it previously did).
       if (opts.function_id === 'gateway::chat_completions') {
-        if (overrides.callProvider) {
-          const payload = opts.payload as any
-          const result = await overrides.callProvider({}, 'sk-test', payload.model, payload.messages)
-          return result
-        }
-        return {}
+        throw new Error('NOT_FOUND: no worker registered function: gateway::chat_completions')
       }
       return {}
     },

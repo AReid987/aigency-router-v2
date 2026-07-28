@@ -19,6 +19,7 @@
  */
 
 import crypto from 'node:crypto'
+import { getActiveRateLimiter } from './rate-limiter.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -89,22 +90,9 @@ export function createRateLimitMiddleware(
       )
     })
 
-  return async (req: Record<string, any>): Promise<RateLimitResult> => {
+  return (req: Record<string, any>): RateLimitResult => {
     const key = keyExtractor(req) ?? 'anonymous'
-
-    let limiter: { consume: (k: string) => RateLimitResult }
-
-    if (opts.limiter) {
-      limiter = opts.limiter
-    } else {
-      // Dynamic import to avoid hard dependency — rate-limiter.ts is created by S01.
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { getActiveRateLimiter } = await import('./rate-limiter.ts') as {
-        getActiveRateLimiter: () => { consume: (k: string) => RateLimitResult }
-      }
-      limiter = getActiveRateLimiter()
-    }
-
+    const limiter = opts.limiter ?? getActiveRateLimiter()
     return limiter.consume(key)
   }
 }

@@ -57,8 +57,11 @@ export function createSelectorWorker(
   const ready = (async () => {
     try {
       selector = await createSelectorAsync(factoryOptions)
-      // Detect SLM by checking constructor name — safe across module boundaries
-      slmAvailable = (selector as any)?.constructor?.name === 'SLMSelector'
+      // Detect SLM via instanceof (works with mocked modules in tests) with a
+      // constructor-name fallback for cross-module-boundary safety.
+      slmAvailable =
+        selector instanceof SLMSelector ||
+        (selector as any)?.constructor?.name === 'SLMSelector'
       console.log(
         `[selector] Initialized with ${slmAvailable ? 'SLMSelector' : 'HeuristicSelector'}` +
         (slmAvailable ? ` (model: ${resolvedModel})` : ' (fallback)'),

@@ -68,10 +68,11 @@ export function createSseServer(port: number = 3115): {
   })
 
   const ready = new Promise<number>((resolve) => {
-    server.listen(port, '127.0.0.1', () => {
+    const host = process.env.SSE_HOST ?? '0.0.0.0'
+    server.listen(port, host, () => {
       const addr = server.address()
       const actualPort = typeof addr === 'object' && addr ? addr.port : port
-      console.log(`[sugar-db] SSE server listening on http://127.0.0.1:${actualPort}/events`)
+      console.log(`[sugar-db] SSE server listening on http://${host}:${actualPort}/events`)
       resolve(actualPort)
     })
   })
