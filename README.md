@@ -78,17 +78,17 @@ CLI agent / HTTP client
   └────────┬────────┘
            │ iii WebSocket control plane
            ▼
-  ┌────────────────────────────────────────────────────────┐
-  │                 iii Engine (:49134)                     │
-  │  Rust binary — WebSocket hub, HTTP trigger, state,     │
-  │  streams, queues, pubsub, cron, observability          │
-  └───┬────┬────┬────┬────┬────┬────┬────┬────┬────┬──────┘
-      │    │    │    │    │    │    │    │    │    │
-      ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼
-   ┌────┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌──────┐
-   │Brain│ │Gate│ │Trans│ │Vault│ │Seln │ │Eng.│ │SgrDB│ │Prvd │ │Agents│ │Mem   │
-   │(Py) │ │way │ │lator│ │     │ │ctor │ │ram │ │    │ │Clnts│ │     │ │      │
-   └─────┘ └───┘ └─────┘ └─────┘ └─────┘ └────┘ └────┘ └────┘ └─────┘ └──────┘
+  ┌─────────────────────────────────────────────────────---------------------───┐
+  │                 iii Engine (:49134)                                         │
+  │  Rust binary — WebSocket hub, HTTP trigger, state,                          │
+  │  streams, queues, pubsub, cron, observability                               │
+  └───┬────┬────┬────┬────┬────┬────┬────┬────┬────┬─────--┬--------┬--------┬-─┘
+      │    │    │    │    │    │    │    │    │    │       │        │        │
+      ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼       ▼        ▼        ▼
+   ┌───-─┐ ┌──-─┐ ┌──--─┐ ┌──--─┐ ┌──--─┐ ┌─-──┐ ┌──--─┐ ┌──--─┐ ┌──---─┐ ┌──────┐
+   │Brain│ │Gate│ │Trans│ │Vault│ │Sele │ │Eng.│ │SgrDB│ │Prvd │ │Agents│ │Memory│
+   │(Py) │ │way │ │lator│ │     │ │ctor │ │ram │ │     │ │Clnts│ │      │ │      │
+   └─────┘ └───-┘ └─────┘ └─────┘ └─────┘ └────┘ └──-──┘ └──-──┘ └───-──┘ └──────┘
 ```
 
 ### Request Lifecycle
