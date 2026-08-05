@@ -1,12 +1,19 @@
 import { describe, it, mock, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 
-// Mock the ollama module before importing SLMSelector
-const mockChat = mock.fn()
+// Mock the llama-client module before importing SLMSelector
+const mockClassifyViaLlama = mock.fn()
+const mockGetDefaultModelPath = mock.fn(() => '/mock/models/qwen2.5-0.5b-instruct-q4_k_m.gguf')
+const mockIsLlamaBinaryAvailable = mock.fn(() => true)
+const mockIsModelAvailable = mock.fn(() => true)
 
-mock.module('ollama', {
-  namedExports: { Ollama: class MockOllama { chat = mockChat } },
-  defaultExport: class MockOllama { chat = mockChat },
+mock.module('./llama-client.ts', {
+  namedExports: {
+    classifyViaLlama: mockClassifyViaLlama,
+    getDefaultModelPath: mockGetDefaultModelPath,
+    isLlamaBinaryAvailable: mockIsLlamaBinaryAvailable,
+    isModelAvailable: mockIsModelAvailable,
+  },
 })
 
 const { SLMSelector } = await import('./slm-selector.ts')
@@ -25,7 +32,10 @@ describe('SLMSelector', () => {
   let mockTrigger: (target: string, fnName: string, input: unknown) => Promise<unknown>
 
   beforeEach(() => {
-    mockChat.mock.resetCalls()
+    mockClassifyViaLlama.mock.resetCalls()
+    mockGetDefaultModelPath.mock.resetCalls()
+    mockIsLlamaBinaryAvailable.mock.resetCalls()
+    mockIsModelAvailable.mock.resetCalls()
     telemetryCalls = []
     mockTrigger = async (_target: string, _fnName: string, input: unknown) => {
       telemetryCalls.push(input as Record<string, unknown>)
@@ -34,9 +44,9 @@ describe('SLMSelector', () => {
   })
 
   it('classifies a simple request correctly', async () => {
-    mockChat.mock.mockImplementation(async () => ({
-      message: { content: '{"classification": "simple", "reason": "short prompt"}' },
-    }))
+    mockClassifyViaLlama.mock.mockImplementation(async () =>
+      '{"classification": "simple", "reason": "short prompt"}',
+    )
 
     const selector = new SLMSelector({
       telemetryDeps: { trigger: mockTrigger },
@@ -48,9 +58,9 @@ describe('SLMSelector', () => {
   })
 
   it('classifies a complex request (5 messages, enforce_json)', async () => {
-    mockChat.mock.mockImplementation(async () => ({
-      message: { content: '{"classification": "complex", "reason": "multi-turn with JSON"}' },
-    }))
+    mockClassifyViaLlama.mock.mockImplementation(async () =>
+      '{"classification": "complex", "reason": "multi-turn with JSON"}',
+    )
 
     const selector = new SLMSelector({
       telemetryDeps: { trigger: mockTrigger },
@@ -72,10 +82,9 @@ describe('SLMSelector', () => {
     assert.equal(result, 'complex')
   })
 
-  it('throws timeout error when Ollama is too slow', async () => {
-    mockChat.mock.mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 5000))
-      return { message: { content: '{}' } }
+  it('throws timeout error when llama-cli is too slow', async () => {
+    mockClassifyViaLlama.mock.mockImplementation(async () => {
+      throw new Error('llama-cli timeout after 50ms')
     })
 
     const selector = new SLMSelector({ timeoutMs: 50 })
@@ -90,24 +99,8 @@ describe('SLMSelector', () => {
   })
 
   it('throws parse error for malformed JSON', async () => {
-    mockChat.mock.mockImplementation(async () => ({
-      message: { content: 'not json at all' },
-    }))
-
-    const selector = new SLMSelector({ timeoutMs: 1000 })
-
-    await assert.rejects(
-      () => selector.classify(makeRequest()),
-      (err: Error) => {
-        assert.match(err.message, /malformed JSON/i)
-        return true
-      },
-    )
-  })
-
-  it('throws connection error when Ollama is unreachable', async () => {
-    mockChat.mock.mockImplementation(async () => {
-      throw new Error('fetch failed ECONNREFUSED 127.0.0.1:11434')
+    mockClassifyViaLlama.mock.mockImplementation(async () => {
+      throw new Error('No valid classification JSON found in output: not json at all')
     })
 
     const selector = new SLMSelector({ timeoutMs: 1000 })
@@ -115,16 +108,33 @@ describe('SLMSelector', () => {
     await assert.rejects(
       () => selector.classify(makeRequest()),
       (err: Error) => {
-        assert.match(err.message, /connection refused/i)
+        // The error propagates from llama-client's extractClassificationJson
+        assert.match(err.message, /No valid classification JSON/i)
+        return true
+      },
+    )
+  })
+
+  it('throws ENOENT error when llama-cli binary is not found', async () => {
+    mockClassifyViaLlama.mock.mockImplementation(async () => {
+      throw new Error('llama-cli binary not found: llama-cli')
+    })
+
+    const selector = new SLMSelector({ timeoutMs: 1000 })
+
+    await assert.rejects(
+      () => selector.classify(makeRequest()),
+      (err: Error) => {
+        assert.match(err.message, /not found/i)
         return true
       },
     )
   })
 
   it('emits SLM_CLASSIFY telemetry on successful classification', async () => {
-    mockChat.mock.mockImplementation(async () => ({
-      message: { content: '{"classification": "simple", "reason": "test"}' },
-    }))
+    mockClassifyViaLlama.mock.mockImplementation(async () =>
+      '{"classification": "simple", "reason": "test"}',
+    )
 
     const selector = new SLMSelector({
       telemetryDeps: { trigger: mockTrigger },
@@ -143,8 +153,32 @@ describe('SLMSelector', () => {
     assert.equal(event.eventClass, 'SLM_CLASSIFY')
     assert.equal(event.sourceWorker, 'test-worker')
     assert.equal(event.payload.classification, 'simple')
-    assert.equal(event.payload.model, 'qwen2.5:0.5b')
+    assert.equal(event.payload.model, 'qwen2.5-0.5b-instruct-q4_k_m')
     assert.equal(event.payload.requestMessageCount, 1)
     assert.ok(typeof event.payload.latencyMs === 'number')
+  })
+
+  it('isAvailable returns true when binary and model exist', () => {
+    mockIsLlamaBinaryAvailable.mock.mockImplementation(() => true)
+    mockIsModelAvailable.mock.mockImplementation(() => true)
+
+    const selector = new SLMSelector()
+    assert.equal(selector.isAvailable(), true)
+  })
+
+  it('isAvailable returns false when binary is missing', () => {
+    mockIsLlamaBinaryAvailable.mock.mockImplementation(() => false)
+    mockIsModelAvailable.mock.mockImplementation(() => true)
+
+    const selector = new SLMSelector()
+    assert.equal(selector.isAvailable(), false)
+  })
+
+  it('isAvailable returns false when model is missing', () => {
+    mockIsLlamaBinaryAvailable.mock.mockImplementation(() => true)
+    mockIsModelAvailable.mock.mockImplementation(() => false)
+
+    const selector = new SLMSelector()
+    assert.equal(selector.isAvailable(), false)
   })
 })

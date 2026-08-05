@@ -41,6 +41,9 @@ function mockInvocation(body: unknown) {
       stream,
       close: () => { closed = true },
     },
+    setHeader: (name: string, value: string) => { headers[name.toLowerCase()] = value },
+    getHeader: (name: string) => headers[name.toLowerCase()],
+    removeHeader: (name: string) => { delete headers[name.toLowerCase()] },
     _written: written,
     _closed: () => closed,
     _statusCode: () => statusCode,
@@ -49,16 +52,27 @@ function mockInvocation(body: unknown) {
 }
 
 function mockReader(messages: string[] = []) {
-  const stream = new EventEmitter()
+  // Models the real SDK ChannelReader: `stream` is a Readable that must be
+  // resumed before messages flow.
+  const stream = new EventEmitter() as EventEmitter & {
+    resume: () => void
+    pause: () => void
+  }
   let closed = false
+  let delivered = false
   const callbacks: ((msg: string) => void)[] = []
 
   const deliver = () => {
+    if (delivered) return
+    delivered = true
     for (const msg of messages) {
       for (const cb of callbacks) cb(msg)
     }
     setTimeout(() => stream.emit('end'), 5)
   }
+
+  stream.resume = () => { setTimeout(deliver, 2) }
+  stream.pause = () => {}
 
   return {
     onMessage(cb: (msg: string) => void) {
@@ -138,6 +152,14 @@ function buildFullMock(overrides: {
           return { key }
         }
         return { key: 'sk-test' }
+      }
+      // NOTE: gateway::chat_completions is deliberately NOT handled here.
+      // The engine refuses to route a function back to the worker that
+      // registered it, so the gateway can never self-invoke. DAG sub-tasks
+      // run in-process via routeLlm; mocking a self-invocation here would
+      // hide that failure (it previously did).
+      if (opts.function_id === 'gateway::chat_completions') {
+        throw new Error('NOT_FOUND: no worker registered function: gateway::chat_completions')
       }
       return {}
     },
@@ -476,8 +498,10 @@ describe('E2E: edge cases', () => {
     await new Promise(r => setTimeout(r, 200))
 
     assert.equal(inv._statusCode(), 200)
-    assert.equal(receivedMessages.length, 51, 'all 51 messages should be passed to provider')
-    assert.equal(receivedMessages[50].content, 'Final question')
+    // DAG decomposes 51 messages into 26 intents (one per user message).
+    // Each DAG node passes its sub-set of messages to callProvider.
+    assert.equal(receivedMessages.length, 1, 'DAG passes one message per intent')
+    assert.equal(receivedMessages[0].content, 'Final question')
   })
 
   it('telemetry trigger calls include all routing stages', async () => {

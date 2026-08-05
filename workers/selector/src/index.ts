@@ -15,6 +15,8 @@ import { createSelectorAsync, type SelectorFactoryOptions } from '../../shared/s
 import { SLMSelector } from '../../shared/slm-selector.ts'
 import { logTelemetry } from '../../shared/telemetry.ts'
 import type { Selector, ModelRequest, Classification } from '../../vault/src/selector.ts'
+import { OffloadRouter } from '../../shared/offload-router.ts'
+import { ClusterDiscovery, HttpTailscaleTransport } from '../../shared/cluster-discovery.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 
@@ -48,13 +50,18 @@ export function createSelectorWorker(
 
   let selector: Selector | null = null
   let slmAvailable = false
-  let resolvedModel = factoryOptions.slmModel ?? 'qwen2.5:0.5b'
+  let resolvedModel = factoryOptions.modelPath ?? 'qwen2.5-0.5b-instruct-q4_k_m'
+  let offloadRouter: OffloadRouter | null = null
 
-  // Probe Ollama on startup
+  // Probe llama-cli + GGUF model availability on startup
   const ready = (async () => {
     try {
       selector = await createSelectorAsync(factoryOptions)
-      slmAvailable = selector instanceof SLMSelector
+      // Detect SLM via instanceof (works with mocked modules in tests) with a
+      // constructor-name fallback for cross-module-boundary safety.
+      slmAvailable =
+        selector instanceof SLMSelector ||
+        (selector as any)?.constructor?.name === 'SLMSelector'
       console.log(
         `[selector] Initialized with ${slmAvailable ? 'SLMSelector' : 'HeuristicSelector'}` +
         (slmAvailable ? ` (model: ${resolvedModel})` : ' (fallback)'),
@@ -64,6 +71,24 @@ export function createSelectorWorker(
       const { HeuristicSelector } = await import('../../vault/src/selector.ts')
       selector = new HeuristicSelector()
       slmAvailable = false
+    }
+
+    // Wire OffloadRouter when cluster offload is enabled.
+    // ClusterDiscovery takes (options, transport) — transport is a positional arg.
+    if (process.env.SELECTOR_OFFLOAD_ENABLED === 'true' && selector) {
+      const peersUrl = process.env.SELECTOR_PEERS_URL ?? process.env.TAILSCALE_PEERS_URL ?? ''
+      const transport = new HttpTailscaleTransport(peersUrl)
+      const discovery = new ClusterDiscovery({ sourceWorker: 'selector' }, transport)
+      await discovery.start().catch(() => {})
+      offloadRouter = new OffloadRouter({
+        localSelector: selector,
+        clusterDiscovery: discovery,
+        telemetryDeps: {
+          trigger: (fnName: string, payload: unknown) =>
+            iii.trigger({ function_id: fnName, payload: payload as Record<string, unknown> }),
+        },
+      })
+      console.log('[selector] OffloadRouter enabled — peers:', peersUrl)
     }
   })()
 
@@ -91,10 +116,12 @@ export function createSelectorWorker(
     const start = Date.now()
 
     try {
-      // SLMSelector.classify() is async; HeuristicSelector.classify() is sync.
-      // We handle both by checking and awaiting if needed.
-      const result = selector.classify(request)
-      const classification: Classification = result instanceof Promise ? await result : result
+      // Use OffloadRouter when available, otherwise direct selector.
+      // await Promise.resolve() handles both sync (HeuristicSelector) and
+      // async (SLMSelector) classify returns uniformly.
+      const classification: Classification = offloadRouter
+        ? await offloadRouter.classify(request)
+        : await Promise.resolve(selector.classify(request))
       const latencyMs = Date.now() - start
 
       // Emit telemetry

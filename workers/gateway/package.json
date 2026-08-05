@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "test": "node --test src/index.test.ts src/provider-client.test.ts src/failover.test.ts src/streaming.test.ts src/heal-integration.test.ts src/dag-planner.test.ts"
+    "test": "tsx --test src/index.test.ts src/provider-client.test.ts src/failover.test.ts src/streaming.test.ts src/heal-integration.test.ts src/dag-planner.test.ts src/http-handler.test.ts src/http-handler-zero-cost.test.ts src/rate-limiter.test.ts src/middleware.test.ts src/health.test.ts src/lifecycle.test.ts src/logger.test.ts src/parallel_scheduler.test.ts src/distributor.test.ts src/distributor.integration.test.ts src/peer_reviewer.test.ts"
   },
   "dependencies": {
-    "iii-sdk": "^0.17.0"
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^13.0.1",
+    "iii-sdk": "^0.17.0",
+    "pino": "^9.14.0"
   },
   "devDependencies": {
-    "tsx": "^4.0.0",
     "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   }
 }

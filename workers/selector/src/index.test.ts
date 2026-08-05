@@ -66,6 +66,35 @@ mock.module('../../shared/telemetry.ts', {
   },
 })
 
+// Mock cluster-discovery (used when offload is enabled)
+mock.module('../../shared/cluster-discovery.ts', {
+  namedExports: {
+    ClusterDiscovery: class MockClusterDiscovery {
+      constructor() {}
+      start = mock.fn(async () => {})
+      stop = mock.fn(async () => {})
+      getPeers = mock.fn(() => [])
+      onNodeUp: null
+      onNodeDown: null
+    },
+    HttpTailscaleTransport: class MockHttpTransport {
+      constructor() {}
+      getPeers = mock.fn(async () => [])
+    },
+  },
+})
+
+// Mock offload-router (used when offload is enabled)
+const mockOffloadRouterClassify = mock.fn(async (_req: unknown) => 'simple')
+mock.module('../../shared/offload-router.ts', {
+  namedExports: {
+    OffloadRouter: class MockOffloadRouter {
+      constructor() {}
+      classify = mockOffloadRouterClassify
+    },
+  },
+})
+
 // ── Import worker AFTER mocks ──────────────────────────────────────────
 
 const { createSelectorWorker } = await import('./index.ts')
@@ -155,6 +184,53 @@ describe('Selector iii Worker', () => {
     assert.equal(result.worker, 'selector')
     assert.equal(result.slmAvailable, false)
     assert.equal(typeof result.model, 'string')
+  })
+
+  it('uses OffloadRouter when SELECTOR_OFFLOAD_ENABLED=true', async () => {
+    factoryResult = 'heuristic'
+    mockCreateSelectorAsync.mock.mockImplementation(async () => ({
+      classify: mock.fn((_req: unknown) => 'simple'),
+    }))
+    mockOffloadRouterClassify.mock.mockImplementation(async (_req: unknown) => 'simple')
+
+    // Save and set env for offload
+    const origEnabled = process.env.SELECTOR_OFFLOAD_ENABLED
+    const origPeersUrl = process.env.SELECTOR_PEERS_URL
+    process.env.SELECTOR_OFFLOAD_ENABLED = 'true'
+    process.env.SELECTOR_PEERS_URL = 'http://fake-peers:9999/peers'
+
+    try {
+      const { iii, ready } = createSelectorWorker('ws://mock:49134')
+      await ready
+
+      const classifyFn = registeredFunctions.get('selector::classify')
+      assert.ok(classifyFn, 'selector::classify should be registered')
+
+      const result = await classifyFn!(makeClassifyInput())
+      assert.equal(result.classification, 'simple')
+
+      // Verify OffloadRouter.classify was called
+      assert.ok(
+        mockOffloadRouterClassify.mock.callCount() > 0,
+        'OffloadRouter.classify should be called when offload is enabled',
+      )
+      // Should return a result with all expected fields
+      assert.ok('latencyMs' in result)
+      assert.ok('confidence' in result)
+      assert.ok('source' in result)
+    } finally {
+      // Restore env
+      if (origEnabled !== undefined) {
+        process.env.SELECTOR_OFFLOAD_ENABLED = origEnabled
+      } else {
+        delete process.env.SELECTOR_OFFLOAD_ENABLED
+      }
+      if (origPeersUrl !== undefined) {
+        process.env.SELECTOR_PEERS_URL = origPeersUrl
+      } else {
+        delete process.env.SELECTOR_PEERS_URL
+      }
+    }
   })
 
   it('classify payload shape matches expected format', async () => {

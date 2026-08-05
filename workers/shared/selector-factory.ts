@@ -1,30 +1,36 @@
 /**
- * Selector Factory — probes Ollama availability and returns the best selector.
+ * Selector Factory — probes llama-cli + GGUF model availability and returns the best selector.
  *
- * When Ollama is reachable and the target model is loaded, returns SLMSelector.
+ * When llama-cli binary exists and the GGUF model file is present, returns SLMSelector.
  * Otherwise falls back to HeuristicSelector with a console warning.
  * When `preferSlm: false`, skips the probe entirely.
  */
 
-import { Ollama } from 'ollama'
 import { SLMSelector, type SLMSelectorConfig } from './slm-selector.ts'
 import { HeuristicSelector, type Selector } from '../vault/src/selector.ts'
+import {
+  getDefaultModelPath,
+  isLlamaBinaryAvailable,
+  isModelAvailable,
+} from './llama-client.ts'
 
 export interface SelectorFactoryOptions {
-  /** Prefer SLM-based selector when Ollama is available. Default: true. */
+  /** Prefer SLM-based selector when llama-cli is available. Default: true. */
   preferSlm?: boolean
-  /** Ollama host URL. Default: http://localhost:11434 */
-  ollamaUrl?: string
-  /** SLM model name to probe for. Default: qwen2.5:0.5b */
-  slmModel?: string
-  /** Timeout for the Ollama availability probe. Default: 500ms */
+  /** Path to the GGUF model file. Default: ~/.models/qwen2.5-0.5b-instruct-q4_k_m.gguf */
+  modelPath?: string
+  /** Path to llama-cli binary. Default: 'llama-cli' (resolved from PATH) */
+  binaryPath?: string
+  /** Inference timeout in milliseconds. Default: 500 */
   timeoutMs?: number
+  /** Number of threads for llama-cli. Default: 4 */
+  threads?: number
 }
 
 /**
- * Create a selector by probing Ollama availability.
+ * Create a selector by probing llama-cli and GGUF model availability.
  *
- * Returns SLMSelector when Ollama is reachable and the target model is loaded,
+ * Returns SLMSelector when llama-cli is found and the model file exists,
  * otherwise returns HeuristicSelector. The SLM selector's classify() returns
  * a Promise (async), while HeuristicSelector returns synchronously — callers
  * should handle both with `await`.
@@ -32,87 +38,43 @@ export interface SelectorFactoryOptions {
 export function createSelector(options: SelectorFactoryOptions = {}): Selector {
   const {
     preferSlm = true,
-    ollamaUrl = 'http://localhost:11434',
-    slmModel = 'qwen2.5:0.5b',
+    modelPath = getDefaultModelPath(),
+    binaryPath = 'llama-cli',
     timeoutMs = 500,
+    threads = 4,
   } = options
 
   if (!preferSlm) {
     return new HeuristicSelector()
   }
 
-  // Probe Ollama synchronously is not possible — use a cached/best-effort approach.
-  // For a factory function, we do the probe eagerly and return the result.
-  // Note: This creates the selector immediately; the probe runs in the background.
-  // For a truly async factory, use createSelectorAsync().
-  const probeResult = probeOllamaSync(ollamaUrl, slmModel, timeoutMs)
+  // Synchronous filesystem probe — no network I/O needed
+  const binaryOk = isLlamaBinaryAvailable(binaryPath)
+  const modelOk = isModelAvailable(modelPath)
 
-  if (probeResult === 'available') {
+  if (binaryOk && modelOk) {
     return new SLMSelector({
-      model: slmModel,
-      ollamaUrl,
+      modelPath,
+      binaryPath,
       timeoutMs,
+      threads,
     }) as unknown as Selector
   }
 
-  if (probeResult === 'unavailable') {
-    console.warn(`[selector-factory] Ollama unreachable or model "${slmModel}" not found, falling back to HeuristicSelector`)
+  if (!binaryOk) {
+    console.warn(`[selector-factory] llama-cli binary not found: ${binaryPath}`)
+  }
+  if (!modelOk) {
+    console.warn(`[selector-factory] GGUF model not found at: ${modelPath}`)
   }
 
   return new HeuristicSelector()
 }
 
 /**
- * Async factory — probes Ollama with a real network call and returns the best selector.
- * Use this when you can await the result (e.g., worker startup).
+ * Async factory — identical to createSelector() since the filesystem probe is sync.
+ * Kept for API compatibility with callers that expect an async factory.
  */
 export async function createSelectorAsync(options: SelectorFactoryOptions = {}): Promise<Selector> {
-  const {
-    preferSlm = true,
-    ollamaUrl = 'http://localhost:11434',
-    slmModel = 'qwen2.5:0.5b',
-    timeoutMs = 500,
-  } = options
-
-  if (!preferSlm) {
-    return new HeuristicSelector()
-  }
-
-  try {
-    const ollama = new Ollama({ host: ollamaUrl })
-    const listPromise = ollama.list()
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Ollama probe timeout')), timeoutMs),
-    )
-
-    const result = await Promise.race([listPromise, timeoutPromise])
-    const modelExists = result.models.some(
-      (m: { name: string }) => m.name === slmModel || m.name === `${slmModel}:latest`,
-    )
-
-    if (modelExists) {
-      return new SLMSelector({
-        model: slmModel,
-        ollamaUrl,
-        timeoutMs,
-      }) as unknown as Selector
-    }
-
-    console.warn(`[selector-factory] Model "${slmModel}" not found in Ollama, falling back to HeuristicSelector`)
-    return new HeuristicSelector()
-  } catch {
-    console.warn(`[selector-factory] Ollama probe failed, falling back to HeuristicSelector`)
-    return new HeuristicSelector()
-  }
-}
-
-/**
- * Synchronous probe helper — always returns 'unavailable' since we can't
- * do network I/O synchronously. The async factory (createSelectorAsync)
- * does the real probe. This exists for the sync factory's signature only.
- */
-function probeOllamaSync(_ollamaUrl: string, _slmModel: string, _timeoutMs: number): 'available' | 'unavailable' {
-  // Cannot probe network synchronously — default to unavailable.
-  // Callers who need real probing should use createSelectorAsync().
-  return 'unavailable'
+  return createSelector(options)
 }

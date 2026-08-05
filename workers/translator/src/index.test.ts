@@ -27,8 +27,7 @@ describe('resolveModel', () => {
     assert.deepEqual(result, {
       model: 'llama3',
       providers: [
-        'groq/llama3-8b-8192',
-        'cerebras/llama3.1-8b',
+        'groq/llama-3.1-8b-instant',
         'together/meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
       ],
       resolved: true,

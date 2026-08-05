@@ -45,11 +45,19 @@ function mockInvocation(body: unknown) {
 }
 
 function mockReader(messages: string[] = ['chunk-1', 'chunk-2']) {
-  const stream = new EventEmitter()
+  // Models the real SDK ChannelReader: `stream` is a Readable, so consumers
+  // must resume() it to start the flow. onMessage() alone only subscribes.
+  const stream = new EventEmitter() as EventEmitter & {
+    resume: () => void
+    pause: () => void
+  }
   let closed = false
+  let delivered = false
   const callbacks: ((msg: string) => void)[] = []
 
   const deliver = () => {
+    if (delivered) return
+    delivered = true
     for (const msg of messages) {
       for (const cb of callbacks) {
         cb(msg)
@@ -58,6 +66,9 @@ function mockReader(messages: string[] = ['chunk-1', 'chunk-2']) {
     // Emit 'end' after all messages delivered
     setTimeout(() => stream.emit('end'), 5)
   }
+
+  stream.resume = () => { setTimeout(deliver, 2) }
+  stream.pause = () => {}
 
   return {
     onMessage(cb: (msg: string) => void) {
@@ -592,13 +603,12 @@ describe('HTTP handler: error handling', () => {
 
       await new Promise(r => setTimeout(r, 200))
 
+      // http-handler.ts logEvent still writes via console.log when _logger is null.
+      // model_resolved is emitted by index.ts routeLlm via pino and is not captured here.
       const requestLog = logs.find(l => l.event === 'chat_completions_request')
       assert.ok(requestLog, 'should log chat_completions_request')
       assert.equal(requestLog.model, 'gpt-4')
       assert.equal(requestLog.stream, false)
-
-      const resolveLog = logs.find(l => l.event === 'model_resolved')
-      assert.ok(resolveLog, 'should log model_resolved')
 
       const successLog = logs.find(l => l.event === 'route_success')
       assert.ok(successLog, 'should log route_success')

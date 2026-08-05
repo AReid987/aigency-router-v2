@@ -6,6 +6,7 @@
  */
 
 import { ProviderError, type Message, type ProviderConfig, type ProviderResponse, type StreamChunk } from './provider-client.ts'
+import type { ZeroCostCircuitBreaker } from './zero-cost/circuit_breaker.ts'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -61,10 +62,26 @@ export class FailoverEngine {
    * null to fall through. Default: noop (heal disabled).
    */
   tryHeal: (rawBody: string) => Promise<ProviderResponse | null> = async () => null
+  /**
+   * Optional: look up provider configuration. Defaults to the real
+   * provider-client registry so callers don't need to pass it.
+   */
+  getProviderConfig!: (providerId: string) => ProviderConfig | undefined
+  private _getProviderConfigProvided: boolean = false
 
-  constructor(getKey: GetKeyFn, callProvider: CallProviderFn) {
+  constructor(
+    getKey: GetKeyFn,
+    callProvider: CallProviderFn,
+    getProviderConfig?: (providerId: string) => ProviderConfig | undefined,
+    /** Optional circuit-breaker for zero-cost enforcement */
+    readonly circuitBreaker?: ZeroCostCircuitBreaker,
+  ) {
     this.getKey = getKey
     this.callProvider = callProvider
+    if (getProviderConfig !== undefined) {
+      this.getProviderConfig = getProviderConfig
+      this._getProviderConfigProvided = true
+    }
   }
 
   /**
@@ -109,6 +126,14 @@ export class FailoverEngine {
     options: RouteOptions = {},
   ): Promise<RouteResult> {
     const failures: RouteFailure['failures'] = []
+    // Resolve getProviderConfig once (avoids repeated dynamic import in hot path)
+    // Resolve getProviderConfig once (avoids repeated dynamic import in hot path)
+    const resolveConfig = this._getProviderConfigProvided
+      ? async (providerId: string) => this.getProviderConfig(providerId)
+      : async (providerId: string) => {
+          const { getProviderConfig: gpc } = await import('./provider-client.ts')
+          return gpc(providerId)
+        }
 
     for (const providerModel of providerArray) {
       // Parse "provider/model" format
@@ -122,6 +147,15 @@ export class FailoverEngine {
         continue
       }
 
+      // Check circuit-breaker (zero-cost enforcement) if configured
+      if (this.circuitBreaker) {
+        const cbResult = await this.circuitBreaker.check(providerId, providerId)
+        if (!cbResult.allowed) {
+          failures.push({ provider: providerId, status: null, reason: cbResult.reason ?? 'circuit-breaker refused' })
+          continue
+        }
+      }
+
       // Fetch API key from vault
       const apiKey = await this.getKey(providerId)
       if (apiKey == null) {
@@ -130,8 +164,7 @@ export class FailoverEngine {
       }
 
       // Look up provider config
-      const { getProviderConfig } = await import('./provider-client.ts')
-      const config = getProviderConfig(providerId)
+      const config = await resolveConfig(providerId)
       if (config == null) {
         failures.push({ provider: providerId, status: null, reason: 'unknown provider' })
         continue

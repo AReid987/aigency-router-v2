@@ -12,6 +12,20 @@ import { URL } from 'url';
 
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Max bytes buffered for a channel whose reader has not connected yet.
+ * Readers attach lazily, so some buffering is required, but it must be
+ * bounded or a never-read channel would grow the heap without limit.
+ */
+const MAX_PENDING_CHANNEL_BYTES = 8 * 1024 * 1024;
+
+/** How long buffered frames are retained after the writer closes. */
+const ABANDONED_CHANNEL_TTL_MS = 30_000;
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -97,6 +111,8 @@ export class Engine {
   private readonly workers = new Map<string, WorkerInfo>();
   /** correlationId → pending call */
   private readonly pending = new Map<string, PendingCall>();
+  /** invocationId → { send: calling worker's send function } for worker-to-worker forwarding */
+  private readonly workerInvocations = new Map<string, { send: (m: Record<string, unknown>) => void }>();
   /** channelId → { readWs, writeWs, readerCount, writerCount } */
   private readonly channels = new Map<string, ChannelState>();
 
@@ -328,9 +344,24 @@ export class Engine {
       send({ type: 'invocationresult', invocation_id, error: { code: 'NOT_FOUND', message: `unknown engine function: ${fnId}` } });
       return;
     }
-    // Otherwise, this is a worker calling a non-engine function — should be sent via public API, not direct ws
+    // Look up which worker registered this function and forward the invocation
     if (invocation_id) {
-      send({ type: 'invocationresult', invocation_id, error: { code: 'BAD_REQUEST', message: 'workers cannot call non-engine functions directly' } });
+      for (const [targetId, targetWorker] of this.workers) {
+        if (targetWorker.id !== workerId && targetWorker.functions.has(fnId)) {
+          // Store the calling worker's send function so we can forward the result back
+          this.workerInvocations.set(invocation_id, { send });
+          // Forward the invocation to the target worker
+          targetWorker.ws.send(JSON.stringify({
+            type: 'invokefunction',
+            invocation_id,
+            function_id: fnId,
+            data,
+          }));
+          return;
+        }
+      }
+      // No worker found that registered this function
+      send({ type: 'invocationresult', invocation_id, error: { code: 'NOT_FOUND', message: `no worker registered function: ${fnId}` } });
     }
   }
 
@@ -394,6 +425,17 @@ export class Engine {
 
   private handleInvocationResult(msg: { invocation_id?: string; result?: unknown; error?: unknown }): void {
     const id = msg.invocation_id as string;
+    // Check if this is a worker-to-worker forwarded invocation
+    const workerCall = this.workerInvocations.get(id);
+    if (workerCall) {
+      this.workerInvocations.delete(id);
+      if (msg.error !== undefined) {
+        workerCall.send({ type: 'invocationresult', invocation_id: id, error: msg.error });
+      } else {
+        workerCall.send({ type: 'invocationresult', invocation_id: id, result: msg.result });
+      }
+      return;
+    }
     const pending = this.pending.get(id);
     if (!pending) {
       this.log({ msg: 'unexpected-invocation-result', id });
@@ -538,6 +580,10 @@ export class Engine {
       readerKey,
       writeWs: null,
       readWss: new Set(),
+      pending: [],
+      pendingBytes: 0,
+      writerClosed: false,
+      abandonTimer: null,
       createdAt: Date.now(),
     };
     this.channels.set(channelId, state);
@@ -557,27 +603,102 @@ export class Engine {
   private attachChannelWriter(state: ChannelState, ws: WebSocket): void {
     state.writeWs = ws;
     ws.on('message', (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
-      // Forward writer frames to all readers
+      const frame = Buffer.isBuffer(data)
+        ? data
+        : Array.isArray(data)
+          ? Buffer.concat(data)
+          : Buffer.from(data as ArrayBuffer);
+
+      // Readers connect lazily (the SDK opens the reader WS only once the
+      // consumer subscribes), so a fast writer can finish before any reader
+      // attaches. Buffer frames until the first reader connects, otherwise
+      // the stream is silently dropped.
+      if (state.readWss.size === 0) {
+        // Bound the buffer: a client that never reads must not be able to
+        // grow the engine's heap without limit.
+        if (state.pendingBytes + frame.length > MAX_PENDING_CHANNEL_BYTES) {
+          this.log({ msg: 'channel.pending-overflow', channelId: state.channelId, pendingBytes: state.pendingBytes });
+          return;
+        }
+        state.pending.push({ data: frame, isBinary });
+        state.pendingBytes += frame.length;
+        return;
+      }
+
       for (const readerWs of state.readWss) {
         if (readerWs.readyState === readerWs.OPEN) {
-          readerWs.send(data, { binary: isBinary });
+          readerWs.send(frame, { binary: isBinary });
         }
       }
     });
     ws.on('close', () => {
-      // Close all readers too (writer closed = stream done)
-      for (const readerWs of state.readWss) {
-        try { readerWs.close(1000, 'writer-closed'); } catch {}
+      state.writerClosed = true;
+      // Only tear down readers once buffered frames have been delivered.
+      // A reader that connects later flushes `pending` and closes itself.
+      if (state.pending.length === 0) {
+        for (const readerWs of state.readWss) {
+          try { readerWs.close(1000, 'writer-closed'); } catch {}
+        }
       }
-      this.log({ msg: 'channel.writer-closed', channelId: state.channelId });
+      this.log({ msg: 'channel.writer-closed', channelId: state.channelId, buffered: state.pending.length });
+
+      if (state.pending.length === 0) {
+        this.disposeChannel(state);
+      } else {
+        // Nothing has consumed the buffered frames yet. Give a late reader a
+        // grace period, then drop them so abandoned channels can't leak.
+        state.abandonTimer = setTimeout(() => {
+          if (state.pending.length > 0) {
+            this.log({ msg: 'channel.abandoned', channelId: state.channelId, dropped: state.pending.length });
+          }
+          this.disposeChannel(state);
+        }, ABANDONED_CHANNEL_TTL_MS);
+        state.abandonTimer.unref?.();
+      }
     });
+  }
+
+  /** Release a channel's buffers and drop it from the registry. */
+  private disposeChannel(state: ChannelState): void {
+    if (state.abandonTimer) {
+      clearTimeout(state.abandonTimer);
+      state.abandonTimer = null;
+    }
+    state.pending.length = 0;
+    if (state.readWss.size === 0 && state.writerClosed) {
+      this.channels.delete(state.channelId);
+    }
   }
 
   private attachChannelReader(state: ChannelState, ws: WebSocket): void {
     state.readWss.add(ws);
+
+    // Flush anything the writer sent before this reader connected.
+    if (state.pending.length > 0) {
+      const flushPending = () => {
+        for (const { data, isBinary } of state.pending) {
+          try { ws.send(data, { binary: isBinary }); } catch { /* reader gone */ }
+        }
+        this.log({ msg: 'channel.pending-flushed', channelId: state.channelId, frames: state.pending.length });
+        state.pending.length = 0;
+        state.pendingBytes = 0;
+        // Writer already finished — this reader has everything it will get.
+        if (state.writerClosed) {
+          try { ws.close(1000, 'writer-closed'); } catch { /* already closed */ }
+        }
+      };
+      if (ws.readyState === ws.OPEN) flushPending();
+      else ws.on('open', flushPending);
+    } else if (state.writerClosed) {
+      try { ws.close(1000, 'writer-closed'); } catch { /* already closed */ }
+    }
+
     ws.on('close', () => {
       state.readWss.delete(ws);
       this.log({ msg: 'channel.reader-closed', channelId: state.channelId, remaining: state.readWss.size });
+      if (state.writerClosed && state.readWss.size === 0) {
+        this.disposeChannel(state);
+      }
     });
   }
 
@@ -760,7 +881,6 @@ export class Engine {
         let statusCode = 200;
         const responseHeaders: Record<string, string> = { 'Access-Control-Allow-Origin': '*' };
         let headersSet = false;
-        let bodyChunks: Buffer[] = [];
 
         readerWs.on('open', () => {
           // Now invoke the worker — it will open its own WS to the channel as writer
@@ -790,8 +910,14 @@ export class Engine {
               // Not a control message — treat the raw text as body
             } catch { /* not JSON, fall through to body */ }
           }
-          // Body chunk (binary OR unhandled text)
-          bodyChunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+          // Body chunk (binary OR unhandled text). Flush headers on the first
+          // chunk and write straight through so SSE streams to the client
+          // instead of being buffered until the channel closes.
+          if (!headersSet) {
+            res.writeHead(statusCode, responseHeaders);
+            headersSet = true;
+          }
+          res.write(Buffer.isBuffer(data) ? data : Buffer.from(data));
         });
 
         readerWs.on('close', () => {
@@ -799,7 +925,7 @@ export class Engine {
             res.writeHead(statusCode, responseHeaders);
             headersSet = true;
           }
-          res.end(Buffer.concat(bodyChunks));
+          res.end();
         });
 
         readerWs.on('error', (err) => {
@@ -858,6 +984,14 @@ interface ChannelState {
   writeWs: WebSocket | null;
   /** WebSocket(s) for the readers (engine-side HTTP response, or other workers) */
   readWss: Set<WebSocket>;
+  /** Frames written before any reader connected — flushed on first reader attach. */
+  pending: Array<{ data: Buffer; isBinary: boolean }>;
+  /** Byte total of `pending`, kept in sync so the buffer can be bounded. */
+  pendingBytes: number;
+  /** True once the writer WS has closed (stream complete). */
+  writerClosed: boolean;
+  /** Drops buffered frames if no reader ever arrives to consume them. */
+  abandonTimer: ReturnType<typeof setTimeout> | null;
   createdAt: number;
 }
 

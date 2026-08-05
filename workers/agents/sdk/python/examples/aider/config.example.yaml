@@ -1,0 +1,15 @@
+# Aigency Router — aider Integration Configuration
+#
+# Set these environment variables before running aider:
+#
+#   export AIGENCY_BASE_URL="https://api.aigency.dev/v1"   # Your Aigency Router endpoint
+#   export AIGENCY_API_KEY="sk-your-api-key"                # Your API key (if required)
+#
+# Then run aider with:
+#
+#   aider --openai-api-base "$AIGENCY_BASE_URL" --openai-api-key "$AIGENCY_API_KEY"
+#
+# Or add the keys directly to this file:
+
+# openai-api-base: "https://api.aigency.dev/v1"
+# openai-api-key: "sk-your-api-key"

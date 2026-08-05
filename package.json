@@ -5,12 +5,13 @@
   "description": "Aigency OS — autonomous agent swarm orchestration on iii primitives",
   "scripts": {
     "dev:engine": "iii --config iii.config.yaml",
-    "dev:all": "concurrently \"pnpm dev:engine\" \"pnpm --filter './workers/*' dev\"",
+    "dev:all": "concurrently \"pnpm dev:engine\" \"pnpm --filter './workers/gateway' --filter './workers/selector' --filter './workers/translator' --filter './workers/vault' --filter './workers/engram' dev\"",
     "test": "pnpm -r run test",
     "build": "pnpm -r run build"
   },
   "devDependencies": {
     "@iii-dev/observability": "^0.17.0",
+    "@shelve/cli": "^5.2.0",
     "@types/node": "^22.0.0",
     "concurrently": "^9.0.0",
     "iii-sdk": "^0.17.0",
@@ -20,15 +21,5 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "packageManager": "pnpm@10.33.0",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "protobufjs"
-    ]
-  },
-  "dependencies": {
-    "@types/ws": "^8.18.1",
-    "ws": "^8.21.0"
-  }
+  "packageManager": "pnpm@10.33.2+sha512.a90faf6feeab71ad6c6e57f94e0fe1a12f5dcc22cd754db40ae9593eb6a3e0b6b12e3540218bb37ae083404b1f2ce6db2a4121e979829b4aff94b99f49da1cf8"
 }

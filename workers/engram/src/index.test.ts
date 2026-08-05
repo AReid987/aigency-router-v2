@@ -60,6 +60,7 @@ describe('engram function registration', () => {
     assert.ok(sdk.registered.has('engram::record'), 'record should be registered')
     assert.ok(sdk.registered.has('engram::recall'), 'recall should be registered')
     assert.ok(sdk.registered.has('engram::heal_json'), 'heal_json should be registered')
+    assert.ok(sdk.registered.has('engram::gate'), 'gate should be registered')
   })
 })
 

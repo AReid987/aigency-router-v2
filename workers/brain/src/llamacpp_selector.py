@@ -3,7 +3,7 @@
 Loads a local GGUF model in-process; no external daemon. Model is loaded
 lazily on first classify call and cached for subsequent calls.
 
-Default model: ./models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+Default model: ./models/bonsai-1.7b-q4km.gguf
 Override path via LLAMACPP_MODEL_PATH env var.
 """
 
@@ -17,7 +17,7 @@ from selector import Selector
 
 logger = logging.getLogger("brain.llamacpp")
 
-DEFAULT_MODEL_PATH = "./models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+DEFAULT_MODEL_PATH = "./models/bonsai-1.7b-q4km.gguf"
 DEFAULT_N_CTX = 512
 DEFAULT_MAX_TOKENS = 32
 DEFAULT_TEMPERATURE = 0.0
@@ -49,6 +49,12 @@ class LLAMACppSelector(Selector):
         self.timeout_s = timeout_s
         self._model = None
         self._load_lock = threading.Lock()
+        _basename = os.path.basename(self.model_path)
+        try:
+            _size = os.path.getsize(self.model_path)
+            logger.info("Model path: %s (%.0f MB)", _basename, _size / 1e6)
+        except OSError:
+            logger.info("Model path: %s (file not found)", _basename)
 
     def _load_model(self):
         """Lazy-load the model on first call. Cached after first load."""
