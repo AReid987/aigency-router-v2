@@ -11,7 +11,7 @@
     "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "undici": "^7.0.0"
+    "undici": "^7.29.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
