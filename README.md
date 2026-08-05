@@ -70,7 +70,7 @@ CLI agent / HTTP client
         │
         ▼
   ┌─────────────────┐
-  │   Caddy :443     │  Reverse proxy (TLS termination)
+  │   Caddy :443    │  Reverse proxy (TLS termination)
   └────────┬────────┘
            │
   ┌────────▼────────┐
